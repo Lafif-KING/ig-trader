@@ -14,9 +14,8 @@ jobs:
           python-version: "3.13"
       - name: Install Poetry
         run: |
-          setx POETRY_HOME "%USERPROFILE%\poetry"
-          (Invoke-WebRequest -Uri https://install.python-poetry.org -UseBasicParsing).Content | python -
-          echo "%USERPROFILE%\poetry\venv\Scripts" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+          python -m pip install --upgrade pip
+          python -m pip install poetry
       - name: Show versions
         run: |
           python -V
