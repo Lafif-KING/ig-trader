@@ -1,4 +1,4 @@
-﻿line-length = 100
+line-length = 100
 target-version = "py313"
 
 [lint]
@@ -9,6 +9,3 @@ ignore = []
 quote-style = "double"
 indent-style = "space"
 line-ending = "lf"
-
-
-
