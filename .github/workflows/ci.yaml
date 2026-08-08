@@ -8,7 +8,8 @@ jobs:
   build:
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v4
+      -name: Configure Git for LF run: git config --global core.autocrlf false
+      -uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: "3.13"
