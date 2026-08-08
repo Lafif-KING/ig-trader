@@ -1,0 +1,32 @@
+"""Configuration and settings for IG Trader using Pydantic."""
+
+from pydantic_settings import BaseSettings
+
+
+class Settings(BaseSettings):
+    """Settings loaded from environment variables or .env file."""
+
+    # IG API Credentials
+    ig_api_key: str = ""
+    ig_identifier: str = ""
+    ig_password: str = ""
+
+    # IG API Configuration
+    ig_demo: bool = True
+    ig_base_url: str = "https://demo-api.ig.com"
+
+    # Logging
+    log_level: str = "INFO"
+
+    # Session
+    session_timeout_seconds: int = 21600  # 6 hours
+
+    class Config:
+        """Pydantic config."""
+
+        env_file = ".env"
+        env_file_encoding = "utf-8"
+
+
+# Global settings instance
+settings = Settings()
