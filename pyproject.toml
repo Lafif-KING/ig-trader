@@ -14,7 +14,7 @@ httpx = "^0.28.1"
 structlog = "^26.1.0"
 
 [tool.poetry.group.dev.dependencies]
-ruff = ">=0.16.2,<0.17.0"
+ruff = "0.15.0"
 black = ">=26.5.1,<27.0.0"
 isort = ">=8.0.1,<9.0.0"
 pre-commit = ">=4.6.1,<5.0.0"
