@@ -27,10 +27,8 @@ jobs:
       - name: Lint (ruff)
         run: |
           poetry run ruff check .
-          poetry run ruff format --check .
-      - name: Format checks (black, isort)
+      - name: Format checks
         run: |
-          poetry run black --check .
-          poetry run isort --check-only .
+          poetry run ruff format --check .
       - name: Tests
         run: poetry run pytest -q
