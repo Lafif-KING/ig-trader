@@ -49,11 +49,17 @@ class TradingBot:
         df = self.market_data.get_prices(epic, "MINUTE", max_points=50)
         signal = self.strategy.generate_signal(epic, df)
         logger.info("strategy_output", direction=signal.direction.value)
+        # For now, we don't track open positions/daily loss in tests, so pass 0, 0.0
 
-        if self.risk.validate_signal(signal):
-            logger.info("TRADE_ALLOWED", epic=signal.epic, direction=signal.direction.value)
-            lot_size = self.risk.calculate_lot_size(signal.strategy_name, 10)
-            self.execution.execute_trade(signal, lot_size)
+        if self.risk.validate_signal(signal, open_positions_for_strategy=0, daily_loss_pct=0.0):
+            logger.info(
+                "TRADE_ALLOWED",
+                epic=signal.epic,
+                direction=signal.direction.value,
+            )
+            sl_pips, tp_pips = self.risk.get_sl_tp_pips(signal.strategy_name)
+            lot_size = self.risk.calculate_lot_size(signal.strategy_name, price=signal.price)
+            self.execution.execute_trade(signal, lot_size, sl_pips, tp_pips)
         else:
             logger.info("TRADE_BLOCKED_OR_WAITING")
 
