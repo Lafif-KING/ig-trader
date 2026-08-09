@@ -8,14 +8,7 @@ jobs:
   build:
     runs-on: windows-latest
     steps:
-      - name: Configure Git for LF
-        run: |
-          git config --global core.autocrlf false
-          git config --global core.eol lf
       - uses: actions/checkout@v4
-      - name: Normalize line endings
-        run: |
-          git add --renormalize .
       - uses: actions/setup-python@v5
         with:
           python-version: "3.13"
