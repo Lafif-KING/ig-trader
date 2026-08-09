@@ -39,9 +39,7 @@ def save_candles(epic: str, df: pd.DataFrame) -> None:
             # Normalize timestamp (pandas Timestamp -> datetime)
             ts_dt = ts.to_pydatetime() if hasattr(ts, "to_pydatetime") else ts
 
-            exists = (
-                session.query(CandleTable).filter_by(epic=epic, timestamp=ts_dt).first()
-            )
+            exists = session.query(CandleTable).filter_by(epic=epic, timestamp=ts_dt).first()
             if exists:
                 continue
 
