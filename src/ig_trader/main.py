@@ -23,37 +23,39 @@ class TradingBot:
         self.strategy = ScalperStrategy()
         self.execution = ExecutionEngine(self.session)
 
-    def start(self):
+    def start(self) -> None:
         """Starts the bot workflow."""
         logger.info("bot_starting")
 
-        # 1. Login
         if not self.session.login():
             logger.error("bot_start_failed_login")
             return
 
-        # 2. Get Account Balance (Using your Demo balance from the login response)
-        self.portfolio.total_balance = 20000.0  # Placeholder: you have ~23k in your demo
+        self.portfolio.total_balance = 20000.0
         logger.info("bot_ready", balance=self.portfolio.total_balance)
 
-        # 3. RUN ONE CYCLE
-        # A. Fetch Data
+        # ↓↓↓ ADD STATUS CHECK *HERE*, inside start(), before get_prices ↓↓↓
         epic = "CS.D.EURUSD.MINI.IP"
-        df = self.market_data.get_prices(epic, "MINUTE", max_points=50)
 
-        # B. Generate Signal from Strategy
+        status = self.market_data.get_market_status(epic)
+        if status != "TRADEABLE":
+            logger.info(
+                "market_closed_or_untradeable",
+                epic=epic,
+                status=status,
+            )
+            return  # Exit this cycle without trading
+
+        df = self.market_data.get_prices(epic, "MINUTE", max_points=50)
         signal = self.strategy.generate_signal(epic, df)
         logger.info("strategy_output", direction=signal.direction.value)
 
-        # C. Validate with Risk Engine
         if self.risk.validate_signal(signal):
             logger.info("TRADE_ALLOWED", epic=signal.epic, direction=signal.direction.value)
-
-            # D. Execute Trade
             lot_size = self.risk.calculate_lot_size(signal.strategy_name, 10)
             self.execution.execute_trade(signal, lot_size)
         else:
-            logger.info("TRADE_BLOCKED_OR_WAITING", reason="Signal is WAIT or Risk denied")
+            logger.info("TRADE_BLOCKED_OR_WAITING")
 
 
 if __name__ == "__main__":
