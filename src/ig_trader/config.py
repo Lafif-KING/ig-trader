@@ -21,7 +21,9 @@ class Settings(BaseSettings):
     # Session
     session_timeout_seconds: int = 21600  # 6 hours
 
-    model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
+    model_config = SettingsConfigDict(
+        env_file=".env", env_file_encoding="utf-8", extra="ignore"
+    )
 
 
 # Global settings instance

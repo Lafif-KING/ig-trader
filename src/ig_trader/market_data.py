@@ -14,7 +14,9 @@ class MarketDataClient:
     def __init__(self, session: SessionManager | None = None) -> None:
         self.session = session or SessionManager()
 
-    def get_prices(self, epic: str, resolution: str, max_points: int = 100) -> pd.DataFrame:
+    def get_prices(
+        self, epic: str, resolution: str, max_points: int = 100
+    ) -> pd.DataFrame:
         """
         Fetch OHLC prices from IG REST API.
         epic: e.g., 'CS.D.EURUSD.MINI.IP'
@@ -33,7 +35,9 @@ class MarketDataClient:
             raise RuntimeError(f"Failed to get prices: {resp.status_code}")
 
         data = resp.json()
-        candles: list[dict[str, Any]] = data.get("prices", []) or data.get("candles", [])
+        candles: list[dict[str, Any]] = data.get("prices", []) or data.get(
+            "candles", []
+        )
         if not candles:
             cols = ["time", "open", "high", "low", "close", "volume"]
             df_empty = pd.DataFrame(columns=cols)
