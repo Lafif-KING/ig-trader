@@ -1,4 +1,4 @@
-﻿"""Tests for SessionManager using respx for HTTP mocking."""
+"""Tests for SessionManager using respx for HTTP mocking."""
 
 from datetime import UTC, datetime, timedelta
 from unittest.mock import patch
@@ -54,7 +54,7 @@ def test_login_failure(mock_settings: object) -> None:
 def test_logout_success() -> None:
     """Test successful logout."""
     respx.delete("https://demo-api.ig.com/gateway/deal/session").mock(
-    return_value=httpx.Response(200)
+        return_value=httpx.Response(200)
     )
 
     sm = SessionManager()

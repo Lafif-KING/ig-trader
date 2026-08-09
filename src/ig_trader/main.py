@@ -2,6 +2,7 @@
 
 import structlog
 
+from src.ig_trader.execution import ExecutionEngine
 from src.ig_trader.market_data import MarketDataClient
 from src.ig_trader.portfolio import PortfolioManager
 from src.ig_trader.risk import RiskEngine
@@ -17,9 +18,10 @@ class TradingBot:
     def __init__(self):
         self.session = SessionManager()
         self.market_data = MarketDataClient(self.session)
-        self.portfolio = PortfolioManager(total_balance=0.0)  # Will update after login
+        self.portfolio = PortfolioManager(total_balance=0.0)
         self.risk = RiskEngine(self.portfolio)
         self.strategy = ScalperStrategy()
+        self.execution = ExecutionEngine(self.session)
 
     def start(self):
         """Starts the bot workflow."""
@@ -30,23 +32,28 @@ class TradingBot:
             logger.error("bot_start_failed_login")
             return
 
-        # 2. Get real balance
-        # (Placeholder for fetching balance from IG)
-        self.portfolio.total_balance = 1000.0
+        # 2. Get Account Balance (Using your Demo balance from the login response)
+        self.portfolio.total_balance = 20000.0  # Placeholder: you have ~23k in your demo
         logger.info("bot_ready", balance=self.portfolio.total_balance)
 
-        # 3. Process a test signal
-        # This is where we combine everything!
-        logger.info("bot_running_cycle")
+        # 3. RUN ONE CYCLE
+        # A. Fetch Data
+        epic = "CS.D.EURUSD.MINI.IP"
+        df = self.market_data.get_prices(epic, "MINUTE", max_points=50)
 
-        # Fetch data -> Run Strategy -> Check Risk
-        df = self.market_data.get_prices("CS.D.EURUSD.MINI.IP", "MINUTE", max_points=50)
-        signal = self.strategy.generate_signal("EURUSD", df)
+        # B. Generate Signal from Strategy
+        signal = self.strategy.generate_signal(epic, df)
+        logger.info("strategy_output", direction=signal.direction.value)
 
+        # C. Validate with Risk Engine
         if self.risk.validate_signal(signal):
-            logger.info("TRADE_ALLOWED", epic=signal.epic, direction=signal.direction)
+            logger.info("TRADE_ALLOWED", epic=signal.epic, direction=signal.direction.value)
+
+            # D. Execute Trade
+            lot_size = self.risk.calculate_lot_size(signal.strategy_name, 10)
+            self.execution.execute_trade(signal, lot_size)
         else:
-            logger.info("TRADE_BLOCKED_BY_RISK")
+            logger.info("TRADE_BLOCKED_OR_WAITING", reason="Signal is WAIT or Risk denied")
 
 
 if __name__ == "__main__":

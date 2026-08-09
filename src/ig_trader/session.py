@@ -42,7 +42,7 @@ class SessionManager:
                 "identifier": settings.ig_identifier,
                 "password": settings.ig_password,
             },
-            headers={"VERSION": "3"},
+            headers={"VERSION": "2"},
         )
 
         if response.status_code == 200:
