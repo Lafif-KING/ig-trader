@@ -11,9 +11,7 @@ logger = structlog.get_logger(__name__)
 class RiskEngine:
     """The safety guard that validates every trade."""
 
-    def __init__(
-        self, portfolio_mgr: PortfolioManager, max_risk_per_trade: float = 0.02
-    ):
+    def __init__(self, portfolio_mgr: PortfolioManager, max_risk_per_trade: float = 0.02):
         """
         Args:
             portfolio_mgr: The boss who knows the budget.
@@ -31,9 +29,7 @@ class RiskEngine:
             return False
 
         # 1. Get the specific budget for this strategy (e.g., 30% of total)
-        strategy_budget = self.portfolio_mgr.get_budget_for_strategy(
-            signal.strategy_name
-        )
+        strategy_budget = self.portfolio_mgr.get_budget_for_strategy(signal.strategy_name)
 
         if strategy_budget <= 0:
             logger.warning("risk_block_no_budget", strategy=signal.strategy_name)

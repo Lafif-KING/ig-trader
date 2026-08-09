@@ -9,12 +9,8 @@ def add_rsi(df: pd.DataFrame, length: int = 14) -> pd.DataFrame:
     return df
 
 
-def add_macd(
-    df: pd.DataFrame, fast: int = 12, slow: int = 26, signal: int = 9
-) -> pd.DataFrame:
-    macd = ta.trend.MACD(
-        close=df["close"], window_fast=fast, window_slow=slow, window_sign=signal
-    )
+def add_macd(df: pd.DataFrame, fast: int = 12, slow: int = 26, signal: int = 9) -> pd.DataFrame:
+    macd = ta.trend.MACD(close=df["close"], window_fast=fast, window_slow=slow, window_sign=signal)
     df["macd"] = macd.macd()
     df["macd_signal"] = macd.macd_signal()
     df["macd_hist"] = macd.macd_diff()

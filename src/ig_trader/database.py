@@ -41,11 +41,7 @@ def save_candles(epic: str, df: pd.DataFrame):
     try:
         for timestamp, row in df.iterrows():
             # Check if this specific candle already exists to avoid duplicates
-            exists = (
-                session.query(CandleTable)
-                .filter_by(epic=epic, timestamp=timestamp)
-                .first()
-            )
+            exists = session.query(CandleTable).filter_by(epic=epic, timestamp=timestamp).first()
 
             if not exists:
                 candle = CandleTable(

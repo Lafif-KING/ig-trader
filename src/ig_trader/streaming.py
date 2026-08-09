@@ -1,6 +1,7 @@
 """Live streaming module using Lightstreamer."""
 
 from typing import Any
+
 import structlog
 from lightstreamer.client import LightstreamerClient, Subscription
 
