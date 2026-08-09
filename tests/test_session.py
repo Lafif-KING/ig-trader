@@ -4,7 +4,6 @@ from datetime import datetime, timedelta
 from unittest.mock import patch
 
 import httpx
-import pytest
 import respx
 
 from src.ig_trader.session import SessionManager
