@@ -1,6 +1,6 @@
 """Configuration and settings for IG Trader using Pydantic."""
 
-from pydantic_settings import BaseSettings
+from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class Settings(BaseSettings):
@@ -21,11 +21,9 @@ class Settings(BaseSettings):
     # Session
     session_timeout_seconds: int = 21600  # 6 hours
 
-    class Config:
-        """Pydantic config."""
-
-        env_file = ".env"
-        env_file_encoding = "utf-8"
+    model_config = SettingsConfigDict(
+        env_file=".env", env_file_encoding="utf-8", extra="ignore"
+    )
 
 
 # Global settings instance
