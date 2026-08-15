@@ -12,7 +12,10 @@ Environment: IG Demo only
 path without importing the trading bot, strategy, risk engine, or execution
 adapter. It creates a v2 session, verifies the active and configured accounts,
 reads the configured market, receives one price quote, deliberately disconnects,
-re-authenticates once, and restores the same read-only subscription.
+re-authenticates once without an intermediate logout, and restores the same
+read-only subscription. The final session is then logged out. Avoiding an
+intermediate logout is necessary because IG can temporarily reject an immediate
+login after `DELETE /session`.
 
 The REST base is fixed to `https://demo-api.ig.com/gateway/deal`. A request is
 rejected before transmission unless it matches this allow-list:

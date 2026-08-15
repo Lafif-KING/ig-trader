@@ -709,7 +709,7 @@ def test_invalid_token_reauthenticates_and_restores_full_probe(tmp_path: Path) -
         [
             login_response(),
             response(401, {"errorCode": "error.security.account-token-invalid"}),
-            *successful_round(),
+            *successful_round()[:-1],
             *successful_round(),
         ],
     )
@@ -840,7 +840,7 @@ def test_forced_reconnect_runner_passes_with_one_active_connection(tmp_path: Pat
     FakeRunnerProbe.instances = []
     runner, client = runner_with_responses(
         tmp_path,
-        successful_round() + successful_round(),
+        successful_round()[:-1] + successful_round(),
     )
 
     evidence = runner.run()
@@ -859,7 +859,12 @@ def test_forced_reconnect_runner_passes_with_one_active_connection(tmp_path: Pat
     assert evidence["lightstreamer"]["active_connection_high_watermark"] == 1
     assert evidence["bounded_reauthentication"]["count"] == 1
     assert evidence["order_endpoint_call_count"] == 0
-    assert len(client.calls) == 10
+    assert len(client.calls) == 9
+    assert [
+        (method, url.rsplit("/", maxsplit=1)[-1])
+        for method, url, _kwargs in client.calls
+        if method in {"POST", "DELETE"}
+    ] == [("POST", "session"), ("POST", "session"), ("DELETE", "session")]
     assert len(FakeRunnerProbe.instances) == 2
     assert all(probe.disconnected for probe in FakeRunnerProbe.instances)
 

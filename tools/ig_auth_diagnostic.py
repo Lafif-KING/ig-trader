@@ -1216,7 +1216,6 @@ class DiagnosticRunner:
             first_probe = self._probe_stream()
             first_probe.disconnect_and_wait(self.config.disconnect_timeout_seconds)
             first_probe = None
-            self._logout()
 
             self.tokens = self._authenticate(recovery=True)
             self._prove_accounts()
