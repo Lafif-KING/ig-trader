@@ -888,4 +888,7 @@ def test_report_secret_redaction_and_required_output(tmp_path: Path) -> None:
     document = json.loads(json_path.read_text(encoding="utf-8"))
     assert document["secret_scan_result"] == "PASS"
     assert document["order_endpoint_call_count"] == 0
+    markdown = markdown_path.read_text(encoding="utf-8")
+    assert "- Lightstreamer error code: `None`" in markdown
+    assert "- Failed-stream cleanup: `NOT_REQUIRED`" in markdown
     assert document["final_classification"] in {item.value for item in Classification}
