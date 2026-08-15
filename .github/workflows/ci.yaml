@@ -78,15 +78,25 @@ jobs:
           az bicep install --version v0.45.15
           az bicep lint --file infra/azure/foundation.bicep
           az bicep lint --file infra/azure/app.bicep
+          az bicep lint --file infra/azure/dev-shadow-foundation.bicep
+          az bicep lint --file infra/azure/dev-shadow-app.bicep
           az bicep build --file infra/azure/foundation.bicep --outfile artifacts/ci/foundation.json
           az bicep build --file infra/azure/app.bicep --outfile artifacts/ci/app.json
+          az bicep build --file infra/azure/dev-shadow-foundation.bicep --outfile artifacts/ci/dev-shadow-foundation.json
+          az bicep build --file infra/azure/dev-shadow-app.bicep --outfile artifacts/ci/dev-shadow-app.json
           az bicep build-params \
             --file infra/azure/foundation.parameters.example.bicepparam \
             --outfile artifacts/ci/foundation.parameters.json
           az bicep build-params \
             --file infra/azure/app.parameters.example.bicepparam \
             --outfile artifacts/ci/app.parameters.json
-          printf '{"compiler":"bicep-v0.45.15","parameter_files":2,"status":"pass"}\n' \
+          az bicep build-params \
+            --file infra/azure/dev-shadow-foundation.parameters.example.bicepparam \
+            --outfile artifacts/ci/dev-shadow-foundation.parameters.json
+          az bicep build-params \
+            --file infra/azure/dev-shadow-app.parameters.example.bicepparam \
+            --outfile artifacts/ci/dev-shadow-app.parameters.json
+          printf '{"compiler":"bicep-v0.45.15","parameter_files":4,"status":"pass"}\n' \
             > artifacts/ci/bicep-result.json
 
       - name: Secret scan

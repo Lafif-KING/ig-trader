@@ -79,3 +79,19 @@ The implementation and rollback procedure are documented in
 `docs/G4A-01-CLOUD-FOUNDATION.md`. Docker and Azure CLI were unavailable in the
 authoring environment, so deployment status is `CLOUD_ACCESS_REQUIRED`; no
 cloud resource or broker session was created.
+
+## G4B
+
+G4B-00 authenticated Azure preflight accepted France Central, resource group
+`rg-igtrader-dev-frc-001` and prefix `igtrdevfrc`, but rejected the G4A
+production-like profile for the first DEV environment on cost grounds. The G4A
+templates remain unchanged as the future hardened profile.
+
+The separate `dev-shadow-*` Bicep profile keeps the internal singleton
+Container App (`minReplicas=1`, `maxReplicas=1`), immutable image identity,
+managed-identity ACR pull, private Entra-only PostgreSQL, durable schema and
+operational logging. It uses Basic ACR, Burstable B1ms PostgreSQL 16 with 32 GB,
+no HA, seven-day backups and 30-day logs. Key Vault and ACR/Key Vault private
+endpoints are intentionally deferred because `NO_EXECUTION` accepts no broker
+credential. The decision and mandatory future security gates are documented in
+`docs/G4B-00-LOW-COST-DEV-SHADOW.md`.

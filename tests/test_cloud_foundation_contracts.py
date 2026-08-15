@@ -48,6 +48,8 @@ def test_ci_contains_every_required_gate_and_sha_pins_actions() -> None:
     assert "poetry check --lock" in workflow
     assert "az bicep install --version v0.45.15" in workflow
     assert "az bicep build --file infra/azure/app.bicep" in workflow
+    assert "az bicep build --file infra/azure/dev-shadow-app.bicep" in workflow
+    assert "az bicep build --file infra/azure/dev-shadow-foundation.bicep" in workflow
     assert "az bicep build-params" in workflow
     assert "pre-commit run --all-files" in workflow
     assert "tests/test_ig_auth_diagnostic.py" in workflow
@@ -85,6 +87,39 @@ def test_azure_foundation_has_private_identity_based_persistence() -> None:
     assert "adminUserEnabled: false" in foundation
     assert "destination: 'azure-monitor'" in foundation
     assert "privateDnsZoneArmResourceId" in foundation
+
+
+def test_low_cost_dev_shadow_profile_preserves_execution_safety() -> None:
+    foundation = _read("infra/azure/dev-shadow-foundation.bicep")
+    application = _read("infra/azure/dev-shadow-app.bicep")
+
+    assert "name: 'Basic'" in foundation
+    assert "adminUserEnabled: false" in foundation
+    assert "publicNetworkAccess: 'Enabled'" in foundation
+    assert "name: 'Standard_B1ms'" in foundation
+    assert "tier: 'Burstable'" in foundation
+    assert "backupRetentionDays: 7" in foundation
+    assert "mode: 'Disabled'" in foundation
+    assert "storageSizeGB: 32" in foundation
+    assert "version: '16'" in foundation
+    assert "passwordAuth: 'Disabled'" in foundation
+    assert "activeDirectoryAuth: 'Enabled'" in foundation
+    assert "privateDnsZoneArmResourceId" in foundation
+    assert "retentionInDays: 30" in foundation
+    assert "Microsoft.KeyVault" not in foundation
+    assert "Microsoft.Network/privateEndpoints" not in foundation
+
+    assert "activeRevisionsMode: 'Single'" in application
+    assert "minReplicas: 1" in application
+    assert "maxReplicas: 1" in application
+    assert "value: 'NO_EXECUTION'" in application
+    assert "secrets: []" in application
+    assert "The input must use repository@sha256:DIGEST form" in application
+    assert "@sha256:" in application
+    assert "IG_API_KEY" not in application
+    assert "IG_IDENTIFIER" not in application
+    assert "IG_PASSWORD" not in application
+    assert "keyVaultUrl" not in application
 
 
 def test_postgresql_migration_covers_durable_trading_state() -> None:
