@@ -199,16 +199,36 @@ jobs:
         env:
           AZURE_REGISTRY_NAME: ${{ vars.AZURE_REGISTRY_NAME }}
           AZURE_IMAGE_REPOSITORY: ${{ vars.AZURE_IMAGE_REPOSITORY }}
+          AZURE_TENANT_ID: ${{ vars.AZURE_TENANT_ID }}
         run: |
-          access_token="$(az acr login \
-            --name "$AZURE_REGISTRY_NAME" \
-            --expose-token \
+          arm_access_token="$(az account get-access-token \
+            --resource https://management.azure.com/ \
             --query accessToken \
             --output tsv)"
-          test -n "$access_token"
-          echo "::add-mask::$access_token"
-          echo "ACR_ACCESS_TOKEN=$access_token" >> "$GITHUB_ENV"
-          printf '%s' "$access_token" | docker login \
+          test -n "$arm_access_token"
+          echo "::add-mask::$arm_access_token"
+          refresh_token="$(curl --fail --silent --show-error \
+            --request POST \
+            --data-urlencode "grant_type=access_token" \
+            --data-urlencode "service=$AZURE_REGISTRY_NAME.azurecr.io" \
+            --data-urlencode "tenant=$AZURE_TENANT_ID" \
+            --data-urlencode "access_token=$arm_access_token" \
+            "https://$AZURE_REGISTRY_NAME.azurecr.io/oauth2/exchange" \
+            | python -c 'import json, sys; print(json.load(sys.stdin)["refresh_token"])')"
+          test -n "$refresh_token"
+          echo "::add-mask::$refresh_token"
+          repository_token="$(curl --fail --silent --show-error \
+            --request POST \
+            --data-urlencode "grant_type=refresh_token" \
+            --data-urlencode "service=$AZURE_REGISTRY_NAME.azurecr.io" \
+            --data-urlencode "scope=repository:$AZURE_IMAGE_REPOSITORY:pull,push" \
+            --data-urlencode "refresh_token=$refresh_token" \
+            "https://$AZURE_REGISTRY_NAME.azurecr.io/oauth2/token" \
+            | python -c 'import json, sys; print(json.load(sys.stdin)["access_token"])')"
+          test -n "$repository_token"
+          echo "::add-mask::$repository_token"
+          echo "ACR_REPOSITORY_TOKEN=$repository_token" >> "$GITHUB_ENV"
+          printf '%s' "$refresh_token" | docker login \
             "$AZURE_REGISTRY_NAME.azurecr.io" \
             --username 00000000-0000-0000-0000-000000000000 \
             --password-stdin
@@ -216,7 +236,7 @@ jobs:
           status="$(curl --silent --show-error \
             --output /dev/null \
             --write-out '%{http_code}' \
-            --header "Authorization: Bearer $access_token" \
+            --header "Authorization: Bearer $repository_token" \
             --header "Accept: application/vnd.docker.distribution.manifest.v2+json" \
             "https://$AZURE_REGISTRY_NAME.azurecr.io/v2/$AZURE_IMAGE_REPOSITORY/manifests/$GITHUB_SHA")"
           if [[ "$status" == "200" ]]; then
@@ -272,7 +292,7 @@ jobs:
             exit 1
           fi
           curl --fail --silent --show-error --head \
-            --header "Authorization: Bearer $ACR_ACCESS_TOKEN" \
+            --header "Authorization: Bearer $ACR_REPOSITORY_TOKEN" \
             --header "Accept: application/vnd.docker.distribution.manifest.v2+json" \
             "https://$AZURE_REGISTRY_NAME.azurecr.io/v2/$AZURE_IMAGE_REPOSITORY/manifests/$digest" \
             > artifacts/image-publish/registry-manifest-headers.txt
