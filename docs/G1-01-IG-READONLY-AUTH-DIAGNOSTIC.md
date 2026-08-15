@@ -65,6 +65,12 @@ written to stdout or evidence. Account values use a run-scoped one-way
 fingerprint so configured/active equality remains visible without a reusable
 identifier hash.
 
+If Lightstreamer rejects a subscription, the report records its numeric
+protocol code and a fixed category only. The server-supplied error message is
+discarded because adapter-specific messages may contain account or request
+identifiers. A failed probe is explicitly disconnected before the REST session
+is logged out.
+
 ## Run the primary diagnostic
 
 Place: Windows PowerShell, in the repository directory.

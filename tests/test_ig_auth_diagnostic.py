@@ -31,6 +31,7 @@ from tools.ig_auth_diagnostic import (
     build_stream_password,
     create_system_trust_lightstreamer_client,
     endpoint_is_allowed,
+    lightstreamer_subscription_error_category,
     load_config,
     write_reports,
 )
@@ -127,6 +128,36 @@ class FakeLightstreamerClient:
 class NoStatusLightstreamerClient(FakeLightstreamerClient):
     def connect(self) -> None:
         return None
+
+
+class RejectingLightstreamerClient(FakeLightstreamerClient):
+    instances: list[RejectingLightstreamerClient] = []
+
+    def __init__(self, endpoint: str, adapter_set: str | None) -> None:
+        super().__init__(endpoint, adapter_set)
+        self.disconnected = False
+        self.__class__.instances.append(self)
+
+    def subscribe(self, subscription: FakeSubscription) -> None:
+        self.subscription = subscription
+        subscription.listener.onSubscriptionError(
+            -1,
+            "deliberately discarded server text with DEMO-ACCOUNT-SECRET",
+        )
+
+    def disconnect(self) -> None:
+        self.disconnected = True
+        super().disconnect()
+
+
+class RejectingProbeFactory:
+    def __call__(self, **kwargs: Any) -> StreamingProbe:
+        return StreamingProbe(
+            **kwargs,
+            client_factory=RejectingLightstreamerClient,
+            subscription_factory=FakeSubscription,
+            clock=lambda: NOW,
+        )
 
 
 class FakeRunnerProbe:
@@ -521,6 +552,47 @@ def test_streaming_connection_timeout_is_explicit() -> None:
 
     with pytest.raises(DiagnosticError, match="LIGHTSTREAMER_CONNECTION_TIMEOUT"):
         probe.connect_and_wait(connect_timeout=0.001, quote_timeout=0.001)
+
+
+def test_subscription_rejection_records_only_numeric_code_and_category(
+    tmp_path: Path,
+) -> None:
+    RejectingLightstreamerClient.instances = []
+    runner, _client = runner_with_responses(
+        tmp_path,
+        successful_round()[:-1] + [response(204)],
+        stream_factory=RejectingProbeFactory(),
+    )
+
+    evidence = runner.run()
+
+    stream = evidence["lightstreamer"]
+    assert evidence["final_classification"] == (Classification.STREAMING_HANDSHAKE_FAILURE.value)
+    assert evidence["remaining_blocker"] == "LIGHTSTREAMER_SUBSCRIPTION_REJECTED"
+    assert stream["subscription_status"] == "REJECTED"
+    assert stream["subscription_error_code"] == -1
+    assert stream["subscription_error_category"] == "METADATA_ADAPTER_REJECTED"
+    assert stream["failure_cleanup"] == "DISCONNECTED"
+    assert evidence["session_cleanup"] == "LOGGED_OUT"
+    assert RejectingLightstreamerClient.instances[0].disconnected is True
+    assert "deliberately discarded" not in json.dumps(evidence)
+
+
+@pytest.mark.parametrize(
+    ("code", "category"),
+    [
+        (-1, "METADATA_ADAPTER_REJECTED"),
+        (17, "DATA_ADAPTER_INVALID"),
+        (23, "SCHEMA_INVALID"),
+        (68, "SERVER_INTERNAL_ERROR"),
+        (999, "SERVER_REJECTED"),
+    ],
+)
+def test_lightstreamer_subscription_error_categories(
+    code: int,
+    category: str,
+) -> None:
+    assert lightstreamer_subscription_error_category(code) == category
 
 
 def test_lightstreamer_factory_installs_verified_system_trust_once(

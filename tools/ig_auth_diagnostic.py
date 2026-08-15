@@ -671,7 +671,8 @@ class QuoteListener:
         self.clock = clock
         self.subscribed = threading.Event()
         self.quote_received = threading.Event()
-        self.subscription_error: tuple[int | None, str | None] | None = None
+        self.subscription_error_received = threading.Event()
+        self.subscription_error_code: int | None = None
         self.first_quote_at: datetime | None = None
         self.bid_present = False
         self.offer_present = False
@@ -679,8 +680,11 @@ class QuoteListener:
     def onSubscription(self) -> None:  # noqa: N802
         self.subscribed.set()
 
-    def onSubscriptionError(self, code: int, message: str) -> None:  # noqa: N802
-        self.subscription_error = (code, message)
+    def onSubscriptionError(self, code: int, _message: str) -> None:  # noqa: N802
+        # The numeric protocol code is safe evidence. Deliberately discard the
+        # server message because adapter implementations may include identifiers.
+        self.subscription_error_code = int(code)
+        self.subscription_error_received.set()
 
     def onItemUpdate(self, update: Any) -> None:  # noqa: N802
         bid = update.getValue("BID")
@@ -735,6 +739,34 @@ class QuoteListener:
 
 LightstreamerFactory = Callable[[str, str | None], Any]
 SubscriptionFactory = Callable[[str, list[str], list[str]], Any]
+
+
+def lightstreamer_subscription_error_category(code: int | None) -> str | None:
+    """Map a numeric Lightstreamer code without retaining its server message."""
+
+    if code is None:
+        return None
+    if code <= 0:
+        return "METADATA_ADAPTER_REJECTED"
+    standard_categories = {
+        15: "COMMAND_KEY_FIELD_MISSING",
+        16: "COMMAND_FIELD_MISSING",
+        17: "DATA_ADAPTER_INVALID",
+        21: "GROUP_INVALID",
+        22: "GROUP_INVALID_FOR_SCHEMA",
+        23: "SCHEMA_INVALID",
+        24: "MODE_NOT_ALLOWED",
+        25: "SELECTOR_INVALID",
+        26: "UNFILTERED_DISPATCH_NOT_ALLOWED",
+        27: "UNFILTERED_DISPATCH_NOT_SUPPORTED",
+        28: "UNFILTERED_DISPATCH_LICENSE_RESTRICTED",
+        29: "RAW_MODE_LICENSE_RESTRICTED",
+        30: "SUBSCRIPTIONS_LICENSE_RESTRICTED",
+        61: "SERVER_RESPONSE_PARSE_ERROR",
+        66: "METADATA_ADAPTER_AUTHORIZATION_EXCEPTION",
+        68: "SERVER_INTERNAL_ERROR",
+    }
+    return standard_categories.get(code, "SERVER_REJECTED")
 
 
 def create_system_trust_lightstreamer_client(
@@ -817,7 +849,7 @@ class StreamingProbe:
         self.client.subscribe(self.subscription)
         self._subscribed = True
         if not self.quote_listener.quote_received.wait(quote_timeout):
-            if self.quote_listener.subscription_error is not None:
+            if self.quote_listener.subscription_error_received.is_set():
                 reason = "LIGHTSTREAMER_SUBSCRIPTION_REJECTED"
             else:
                 reason = "LIGHTSTREAMER_QUOTE_TIMEOUT"
@@ -901,6 +933,8 @@ def _default_evidence(config: DiagnosticConfig) -> dict[str, Any]:
         "lightstreamer": {
             "endpoint_hostname": None,
             "subscription_status": "NOT_ATTEMPTED",
+            "subscription_error_code": None,
+            "subscription_error_category": None,
             "first_quote_timestamp_utc": None,
             "bid_present": False,
             "offer_present": False,
@@ -908,6 +942,7 @@ def _default_evidence(config: DiagnosticConfig) -> dict[str, Any]:
             "connection_status_history": [],
             "forced_reconnect_result": "NOT_ATTEMPTED",
             "active_connection_high_watermark": 0,
+            "failure_cleanup": "NOT_REQUIRED",
         },
         "fault_injection_coverage": {
             "invalid_token": "AUTOMATED_TEST",
@@ -1127,10 +1162,32 @@ class DiagnosticRunner:
             stream["active_connection_high_watermark"],
             1,
         )
-        probe.connect_and_wait(
-            connect_timeout=self.config.connect_timeout_seconds,
-            quote_timeout=self.config.quote_timeout_seconds,
-        )
+        try:
+            probe.connect_and_wait(
+                connect_timeout=self.config.connect_timeout_seconds,
+                quote_timeout=self.config.quote_timeout_seconds,
+            )
+        except DiagnosticError:
+            listener = probe.quote_listener
+            if listener.subscription_error_received.is_set():
+                stream["subscription_status"] = "REJECTED"
+                stream["subscription_error_code"] = listener.subscription_error_code
+                stream["subscription_error_category"] = lightstreamer_subscription_error_category(
+                    listener.subscription_error_code,
+                )
+            elif listener.subscribed.is_set():
+                stream["subscription_status"] = "SUBSCRIBED_NO_QUOTE"
+            elif probe._subscribed:
+                stream["subscription_status"] = "REQUESTED_NO_ACK"
+            try:
+                if probe.connection_listener.connected.is_set():
+                    probe.disconnect_and_wait(self.config.disconnect_timeout_seconds)
+                else:
+                    probe.client.disconnect()
+                stream["failure_cleanup"] = "DISCONNECTED"
+            except Exception:
+                stream["failure_cleanup"] = "FAILED_SANITIZED"
+            raise
         age = probe.require_fresh_quote(self.config.maximum_quote_age_seconds)
         listener = probe.quote_listener
         stream["subscription_status"] = "SUBSCRIBED_QUOTE_RECEIVED"
@@ -1359,6 +1416,8 @@ def _configuration_failure_document(
         "lightstreamer": {
             "endpoint_hostname": None,
             "subscription_status": "NOT_ATTEMPTED",
+            "subscription_error_code": None,
+            "subscription_error_category": None,
             "first_quote_timestamp_utc": None,
             "bid_present": False,
             "offer_present": False,
@@ -1366,6 +1425,7 @@ def _configuration_failure_document(
             "connection_status_history": [],
             "forced_reconnect_result": "NOT_ATTEMPTED",
             "active_connection_high_watermark": 0,
+            "failure_cleanup": "NOT_REQUIRED",
         },
         "fault_injection_coverage": {
             "invalid_token": "AUTOMATED_TEST",
