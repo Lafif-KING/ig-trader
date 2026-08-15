@@ -1,0 +1,332 @@
+name: DEV shadow immutable image publish
+
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: Inspect the OIDC claims or publish one immutable image
+        required: true
+        type: choice
+        options:
+          - inspect_claims
+          - publish
+      expected_sha:
+        description: Exact reviewed 40-character main commit SHA
+        required: true
+        type: string
+
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  group: dev-shadow-image-publish
+  cancel-in-progress: false
+
+jobs:
+  validate-inspect-publish:
+    name: Validate, inspect OIDC, and optionally publish
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    environment: dev-shadow-image-publish
+    steps:
+      - name: Checkout immutable source
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+          fetch-depth: 1
+
+      - name: Verify exact protected-main candidate
+        env:
+          EXPECTED_SHA: ${{ inputs.expected_sha }}
+        run: |
+          if [[ ! "$EXPECTED_SHA" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "expected_sha must be a lowercase 40-character commit SHA" >&2
+            exit 1
+          fi
+          test "$GITHUB_REPOSITORY" = "Lafif-KING/ig-trader"
+          test "$GITHUB_REF" = "refs/heads/main"
+          test "$GITHUB_SHA" = "$EXPECTED_SHA"
+          test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
+
+      - name: Set up exact Python
+        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+        with:
+          python-version: "3.13.14"
+
+      - name: Install exact Poetry
+        run: python -m pip install --disable-pip-version-check poetry==2.4.1
+
+      - name: Verify and install locked dependencies
+        run: |
+          mkdir -p artifacts/image-publish
+          poetry check --lock
+          poetry sync --no-interaction --no-ansi
+          poetry run pip check
+
+      - name: Complete and focused safety tests
+        run: |
+          poetry run pytest -q \
+            --junitxml=artifacts/image-publish/tests-complete.xml
+          poetry run pytest -q \
+            --junitxml=artifacts/image-publish/tests-g1.xml \
+            tests/test_ig_auth_diagnostic.py
+          poetry run pytest -q \
+            --junitxml=artifacts/image-publish/tests-g2.xml \
+            tests/test_g2_offline_paper.py
+          poetry run pytest -q \
+            --junitxml=artifacts/image-publish/tests-g3a.xml \
+            tests/test_g3a_market_data.py \
+            tests/test_g3a_gap_recovery.py
+          poetry run pytest -q \
+            --junitxml=artifacts/image-publish/tests-g3b.xml \
+            tests/test_g3b_replay.py
+          poetry run pytest -q \
+            --junitxml=artifacts/image-publish/tests-g4a-g4b.xml \
+            tests/test_cloud_runtime.py \
+            tests/test_cloud_foundation_contracts.py
+
+      - name: Quality and tracked-secret gates
+        env:
+          GITLEAKS_VERSION: "8.30.1"
+          GITLEAKS_LINUX_X64_SHA256: "551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb"
+        run: |
+          poetry run ruff check .
+          poetry run ruff format --check .
+          poetry run pre-commit run --all-files
+          poetry run python tools/scan_tracked_secrets.py
+          curl --fail --location --silent --show-error \
+            "https://github.com/gitleaks/gitleaks/releases/download/v$GITLEAKS_VERSION/gitleaks_$GITLEAKS_VERSION_linux_x64.tar.gz" \
+            --output /tmp/gitleaks.tar.gz
+          echo "$GITLEAKS_LINUX_X64_SHA256  /tmp/gitleaks.tar.gz" | sha256sum --check --strict
+          tar --extract --gzip --file /tmp/gitleaks.tar.gz --directory /tmp gitleaks
+          /tmp/gitleaks dir --no-banner --redact --exit-code 1 .
+          printf '{"gitleaks":"pass","tracked_source_scan":"pass"}\n' \
+            > artifacts/image-publish/secret-scan.json
+
+      - name: Inspect requested GitHub OIDC claims without exposing the token
+        env:
+          EXPECTED_AUDIENCE: api://AzureADTokenExchange
+          EXPECTED_ENVIRONMENT: dev-shadow-image-publish
+          EXPECTED_SHA: ${{ inputs.expected_sha }}
+        run: |
+          poetry run python - <<'PY'
+          import base64
+          import json
+          import os
+          import urllib.parse
+          import urllib.request
+          from pathlib import Path
+
+          request_url = os.environ["ACTIONS_ID_TOKEN_REQUEST_URL"]
+          separator = "&" if "?" in request_url else "?"
+          audience = os.environ["EXPECTED_AUDIENCE"]
+          request_url += separator + urllib.parse.urlencode({"audience": audience})
+          request = urllib.request.Request(
+              request_url,
+              headers={
+                  "Authorization": "Bearer "
+                  + os.environ["ACTIONS_ID_TOKEN_REQUEST_TOKEN"]
+              },
+          )
+          with urllib.request.urlopen(request, timeout=30) as response:
+              token = json.loads(response.read())["value"]
+          payload = token.split(".")[1]
+          payload += "=" * (-len(payload) % 4)
+          claims = json.loads(base64.urlsafe_b64decode(payload))
+          subject = claims.get("sub", "")
+          expected_environment = os.environ["EXPECTED_ENVIRONMENT"]
+          if claims.get("iss") != "https://token.actions.githubusercontent.com":
+              raise SystemExit("unexpected OIDC issuer")
+          if claims.get("aud") != audience:
+              raise SystemExit("unexpected OIDC audience")
+          if claims.get("repository") != "Lafif-KING/ig-trader":
+              raise SystemExit("unexpected OIDC repository")
+          if claims.get("sha") != os.environ["EXPECTED_SHA"]:
+              raise SystemExit("unexpected OIDC commit identity")
+          if f":environment:{expected_environment}" not in subject:
+              raise SystemExit("OIDC subject is not bound to the protected environment")
+          allowed = (
+              "iss",
+              "aud",
+              "sub",
+              "repository",
+              "repository_id",
+              "repository_owner",
+              "repository_owner_id",
+              "environment",
+              "job_workflow_ref",
+              "ref",
+              "sha",
+          )
+          evidence = {key: claims.get(key) for key in allowed if key in claims}
+          output = Path("artifacts/image-publish/oidc-claims.json")
+          output.write_text(
+              json.dumps(evidence, indent=2, sort_keys=True) + "\n",
+              encoding="utf-8",
+          )
+          print("OIDC issuer, audience, repository, environment, and SHA validated")
+          print("OIDC subject: " + subject)
+          PY
+
+      - name: Validate approved nonsecret Azure target metadata
+        if: inputs.mode == 'publish'
+        env:
+          AZURE_CLIENT_ID: ${{ vars.AZURE_CLIENT_ID }}
+          AZURE_TENANT_ID: ${{ vars.AZURE_TENANT_ID }}
+          AZURE_SUBSCRIPTION_ID: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+          AZURE_RESOURCE_GROUP: ${{ vars.AZURE_RESOURCE_GROUP }}
+          AZURE_REGISTRY_NAME: ${{ vars.AZURE_REGISTRY_NAME }}
+          AZURE_IMAGE_REPOSITORY: ${{ vars.AZURE_IMAGE_REPOSITORY }}
+        run: |
+          test -n "$AZURE_CLIENT_ID"
+          test -n "$AZURE_TENANT_ID"
+          test -n "$AZURE_SUBSCRIPTION_ID"
+          test "$AZURE_RESOURCE_GROUP" = "rg-igtrader-dev-frc-001"
+          test "$AZURE_REGISTRY_NAME" = "igtrdevfrcbzkxc6c6acr"
+          test "$AZURE_IMAGE_REPOSITORY" = "ig-trader"
+
+      - name: Authenticate publisher to Azure through OIDC
+        if: inputs.mode == 'publish'
+        uses: azure/login@7184910d9eb2b1c5e48f7073824a90609bb9b6d6 # v2
+        with:
+          client-id: ${{ vars.AZURE_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Authenticate to the approved ACR and reject an existing tag
+        if: inputs.mode == 'publish'
+        env:
+          AZURE_REGISTRY_NAME: ${{ vars.AZURE_REGISTRY_NAME }}
+          AZURE_IMAGE_REPOSITORY: ${{ vars.AZURE_IMAGE_REPOSITORY }}
+        run: |
+          access_token="$(az acr login \
+            --name "$AZURE_REGISTRY_NAME" \
+            --expose-token \
+            --query accessToken \
+            --output tsv)"
+          test -n "$access_token"
+          echo "::add-mask::$access_token"
+          echo "ACR_ACCESS_TOKEN=$access_token" >> "$GITHUB_ENV"
+          printf '%s' "$access_token" | docker login \
+            "$AZURE_REGISTRY_NAME.azurecr.io" \
+            --username 00000000-0000-0000-0000-000000000000 \
+            --password-stdin
+          image_uri="$AZURE_REGISTRY_NAME.azurecr.io/$AZURE_IMAGE_REPOSITORY:$GITHUB_SHA"
+          status="$(curl --silent --show-error \
+            --output /dev/null \
+            --write-out '%{http_code}' \
+            --header "Authorization: Bearer $access_token" \
+            --header "Accept: application/vnd.docker.distribution.manifest.v2+json" \
+            "https://$AZURE_REGISTRY_NAME.azurecr.io/v2/$AZURE_IMAGE_REPOSITORY/manifests/$GITHUB_SHA")"
+          if [[ "$status" == "200" ]]; then
+            echo "immutable commit tag already exists; refusing to overwrite it" >&2
+            exit 1
+          fi
+          if [[ "$status" != "404" ]]; then
+            echo "unable to prove the immutable commit tag is absent (HTTP $status)" >&2
+            exit 1
+          fi
+
+      - name: Build and validate the exact commit image
+        if: inputs.mode == 'publish'
+        env:
+          AZURE_REGISTRY_NAME: ${{ vars.AZURE_REGISTRY_NAME }}
+          AZURE_IMAGE_REPOSITORY: ${{ vars.AZURE_IMAGE_REPOSITORY }}
+          BASE_IMAGE: python:3.13.14-slim-bookworm@sha256:9d7f287598e1a5a978c015ee176d8216435aaf335ed69ac3c38dd1bbb10e8d64
+        run: |
+          image_uri="$AZURE_REGISTRY_NAME.azurecr.io/$AZURE_IMAGE_REPOSITORY:$GITHUB_SHA"
+          docker pull "$BASE_IMAGE"
+          docker build \
+            --build-arg "APP_COMMIT_SHA=$GITHUB_SHA" \
+            --build-arg "APP_SOURCE_URL=$GITHUB_SERVER_URL/$GITHUB_REPOSITORY" \
+            --build-arg "APP_VERSION=0.1.0" \
+            --tag "$image_uri" \
+            .
+          poetry run python tools/g4a_container_smoke.py \
+            --image "$image_uri" \
+            --expected-commit "$GITHUB_SHA" \
+            --evidence artifacts/image-publish/container-smoke.json
+          poetry run python tools/g4a_image_inspect.py \
+            --image "$image_uri" \
+            --expected-base "$BASE_IMAGE" \
+            --expected-commit "$GITHUB_SHA" \
+            --evidence artifacts/image-publish/image-inspection.json
+          sha256sum Dockerfile poetry.lock > artifacts/image-publish/build-inputs.sha256
+
+      - name: Push once and verify the immutable registry digest
+        if: inputs.mode == 'publish'
+        env:
+          AZURE_REGISTRY_NAME: ${{ vars.AZURE_REGISTRY_NAME }}
+          AZURE_IMAGE_REPOSITORY: ${{ vars.AZURE_IMAGE_REPOSITORY }}
+        run: |
+          image_uri="$AZURE_REGISTRY_NAME.azurecr.io/$AZURE_IMAGE_REPOSITORY:$GITHUB_SHA"
+          docker push "$image_uri"
+          repo_digest="$(docker image inspect \
+            --format='{{join .RepoDigests "\n"}}' \
+            "$image_uri" | grep '@sha256:' | head -n 1)"
+          test -n "$repo_digest"
+          digest="$(printf '%s' "$repo_digest" | cut -d@ -f2)"
+          if [[ ! "$digest" =~ ^sha256:[0-9a-f]{64}$ ]]; then
+            echo "registry digest is invalid" >&2
+            exit 1
+          fi
+          curl --fail --silent --show-error --head \
+            --header "Authorization: Bearer $ACR_ACCESS_TOKEN" \
+            --header "Accept: application/vnd.docker.distribution.manifest.v2+json" \
+            "https://$AZURE_REGISTRY_NAME.azurecr.io/v2/$AZURE_IMAGE_REPOSITORY/manifests/$digest" \
+            > artifacts/image-publish/registry-manifest-headers.txt
+          header_digest="$(awk 'BEGIN {IGNORECASE=1} /^docker-content-digest:/ {gsub("\r", ""); print $2}' \
+            artifacts/image-publish/registry-manifest-headers.txt)"
+          test "$header_digest" = "$digest"
+          docker pull "$AZURE_REGISTRY_NAME.azurecr.io/$AZURE_IMAGE_REPOSITORY@$digest"
+          remote_revision="$(docker image inspect \
+            --format '{{index .Config.Labels "org.opencontainers.image.revision"}}' \
+            "$AZURE_REGISTRY_NAME.azurecr.io/$AZURE_IMAGE_REPOSITORY@$digest")"
+          remote_user="$(docker image inspect \
+            --format '{{.Config.User}}' \
+            "$AZURE_REGISTRY_NAME.azurecr.io/$AZURE_IMAGE_REPOSITORY@$digest")"
+          test "$remote_revision" = "$GITHUB_SHA"
+          test "$remote_user" = "10001:10001"
+          echo "IMAGE_DIGEST=$digest" >> "$GITHUB_ENV"
+
+      - name: Record immutable publish evidence
+        if: inputs.mode == 'publish'
+        env:
+          AZURE_REGISTRY_NAME: ${{ vars.AZURE_REGISTRY_NAME }}
+          AZURE_IMAGE_REPOSITORY: ${{ vars.AZURE_IMAGE_REPOSITORY }}
+        run: |
+          poetry run python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          evidence = {
+              "classification": "PASS_IMMUTABLE_IMAGE_PUBLISH",
+              "commit_sha": os.environ["GITHUB_SHA"],
+              "image_digest": os.environ["IMAGE_DIGEST"],
+              "image_repository": (
+                  os.environ["AZURE_REGISTRY_NAME"]
+                  + ".azurecr.io/"
+                  + os.environ["AZURE_IMAGE_REPOSITORY"]
+              ),
+              "immutable_tag": os.environ["GITHUB_SHA"],
+              "mutable_aliases_created": [],
+              "publisher_role": "AcrPush",
+              "publisher_scope": "existing ACR only",
+          }
+          Path("artifacts/image-publish/publish-result.json").write_text(
+              json.dumps(evidence, indent=2, sort_keys=True) + "\n",
+              encoding="utf-8",
+          )
+          print(json.dumps(evidence, sort_keys=True))
+          PY
+
+      - name: Upload immutable checkpoint evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: dev-shadow-image-${{ inputs.mode }}-${{ github.sha }}
+          path: artifacts/image-publish
+          if-no-files-found: error
+          retention-days: 30
