@@ -29,18 +29,40 @@ jobs:
         uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
         with:
           python-version: "3.13.14"
-          cache: poetry
 
       - name: Install exact Poetry
         run: python -m pip install --disable-pip-version-check poetry==2.4.1
 
       - name: Verify and install locked dependencies
         run: |
+          mkdir -p artifacts/ci
           poetry check --lock
           poetry sync --no-interaction --no-ansi
 
-      - name: Tests
-        run: poetry run pytest -q
+      - name: Collect and run complete clean suite
+        run: |
+          poetry run pytest --collect-only -q | tee artifacts/ci/test-collection.txt
+          poetry run pytest -q --junitxml=artifacts/ci/tests-complete.xml
+
+      - name: G1 focused tests
+        run: poetry run pytest -q --junitxml=artifacts/ci/tests-g1.xml tests/test_ig_auth_diagnostic.py
+
+      - name: G2 focused tests
+        run: poetry run pytest -q --junitxml=artifacts/ci/tests-g2.xml tests/test_g2_offline_paper.py
+
+      - name: G3A focused tests
+        run: |
+          poetry run pytest -q \
+            --junitxml=artifacts/ci/tests-g3a.xml \
+            tests/test_g3a_market_data.py \
+            tests/test_g3a_gap_recovery.py
+
+      - name: G4A focused tests
+        run: |
+          poetry run pytest -q \
+            --junitxml=artifacts/ci/tests-g4a.xml \
+            tests/test_cloud_runtime.py \
+            tests/test_cloud_foundation_contracts.py
 
       - name: Ruff
         run: poetry run ruff check .
@@ -48,13 +70,24 @@ jobs:
       - name: Formatting
         run: poetry run ruff format --check .
 
+      - name: Repository pre-commit hooks
+        run: poetry run pre-commit run --all-files
+
       - name: Validate Azure Bicep
         run: |
           az bicep install --version v0.45.15
           az bicep lint --file infra/azure/foundation.bicep
           az bicep lint --file infra/azure/app.bicep
-          az bicep build --file infra/azure/foundation.bicep --stdout > /dev/null
-          az bicep build --file infra/azure/app.bicep --stdout > /dev/null
+          az bicep build --file infra/azure/foundation.bicep --outfile artifacts/ci/foundation.json
+          az bicep build --file infra/azure/app.bicep --outfile artifacts/ci/app.json
+          az bicep build-params \
+            --file infra/azure/foundation.parameters.example.bicepparam \
+            --outfile artifacts/ci/foundation.parameters.json
+          az bicep build-params \
+            --file infra/azure/app.parameters.example.bicepparam \
+            --outfile artifacts/ci/app.parameters.json
+          printf '{"compiler":"bicep-v0.45.15","parameter_files":2,"status":"pass"}\n' \
+            > artifacts/ci/bicep-result.json
 
       - name: Secret scan
         env:
@@ -68,11 +101,15 @@ jobs:
           echo "${GITLEAKS_LINUX_X64_SHA256}  /tmp/gitleaks.tar.gz" | sha256sum --check --strict
           tar --extract --gzip --file /tmp/gitleaks.tar.gz --directory /tmp gitleaks
           /tmp/gitleaks dir --no-banner --redact --exit-code 1 .
+          printf '{"gitleaks":"pass","tracked_source_scan":"pass"}\n' \
+            > artifacts/ci/secret-scan.json
 
       - name: Build commit-addressed image
         env:
+          BASE_IMAGE: python:3.13.14-slim-bookworm@sha256:9d7f287598e1a5a978c015ee176d8216435aaf335ed69ac3c38dd1bbb10e8d64
           IMAGE: ig-trader:${{ github.sha }}
         run: |
+          docker pull "${BASE_IMAGE}"
           docker build \
             --build-arg "APP_COMMIT_SHA=${GITHUB_SHA}" \
             --build-arg "APP_SOURCE_URL=${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}" \
@@ -84,20 +121,28 @@ jobs:
         env:
           IMAGE: ig-trader:${{ github.sha }}
         run: |
-          mkdir -p artifacts/ci
           poetry run python tools/g4a_container_smoke.py \
             --image "${IMAGE}" \
             --expected-commit "${GITHUB_SHA}" \
             --evidence artifacts/ci/container-smoke.json
 
-      - name: Record image identity
+      - name: Inspect image identity and contents
         env:
+          BASE_IMAGE: python:3.13.14-slim-bookworm@sha256:9d7f287598e1a5a978c015ee176d8216435aaf335ed69ac3c38dd1bbb10e8d64
           IMAGE: ig-trader:${{ github.sha }}
         run: |
-          docker image inspect "${IMAGE}" > artifacts/ci/image-identity.json
+          poetry run python tools/g4a_image_inspect.py \
+            --image "${IMAGE}" \
+            --expected-base "${BASE_IMAGE}" \
+            --expected-commit "${GITHUB_SHA}" \
+            --evidence artifacts/ci/image-inspection.json
           sha256sum Dockerfile poetry.lock > artifacts/ci/build-inputs.sha256
 
+      - name: Build compact remote CI evidence
+        run: poetry run python tools/g4a_ci_evidence.py --artifact-directory artifacts/ci
+
       - name: Upload immutable build evidence
+        if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: cloud-foundation-${{ github.sha }}

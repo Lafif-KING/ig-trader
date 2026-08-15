@@ -109,8 +109,10 @@ class CloudService:
         logger.info(
             "cloud_service_stopped",
             reason=self.shutdown_reason,
-            order_endpoint_call_count=self.metrics.order_endpoint_call_count,
-            network_call_count=self.metrics.network_call_count,
+            safety={
+                **self.metrics.document(),
+                "broker_modules_loaded": broker_modules_loaded(),
+            },
         )
 
     def health_document(self, *, readiness: bool) -> tuple[int, dict[str, Any]]:

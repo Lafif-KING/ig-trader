@@ -28,20 +28,35 @@ def test_dockerfile_is_pinned_non_root_and_safe_by_default() -> None:
 def test_ci_contains_every_required_gate_and_sha_pins_actions() -> None:
     workflow = _read(".github/workflows/ci.yaml")
     ordered = [
-        "- name: Tests",
+        "- name: Collect and run complete clean suite",
+        "- name: G1 focused tests",
+        "- name: G2 focused tests",
+        "- name: G3A focused tests",
+        "- name: G4A focused tests",
         "- name: Ruff",
         "- name: Formatting",
+        "- name: Repository pre-commit hooks",
+        "- name: Validate Azure Bicep",
         "- name: Secret scan",
         "- name: Build commit-addressed image",
         "- name: Safe container acceptance test",
-        "- name: Record image identity",
+        "- name: Inspect image identity and contents",
+        "- name: Build compact remote CI evidence",
     ]
     positions = [workflow.index(value) for value in ordered]
     assert positions == sorted(positions)
     assert "poetry check --lock" in workflow
     assert "az bicep install --version v0.45.15" in workflow
     assert "az bicep build --file infra/azure/app.bicep" in workflow
+    assert "az bicep build-params" in workflow
+    assert "pre-commit run --all-files" in workflow
+    assert "tests/test_ig_auth_diagnostic.py" in workflow
+    assert "tests/test_g2_offline_paper.py" in workflow
+    assert "tests/test_g3a_market_data.py" in workflow
+    assert "tests/test_cloud_runtime.py" in workflow
     assert "order_endpoint_call_count" in _read("tools/g4a_container_smoke.py")
+    assert "tools/g4a_image_inspect.py" in workflow
+    assert "tools/g4a_ci_evidence.py" in workflow
     for reference in re.findall(r"uses:\s+[^@\s]+@([^\s#]+)", workflow):
         assert re.fullmatch(r"[0-9a-f]{40}", reference)
 

@@ -56,12 +56,18 @@ def _health(port: int, path: str) -> dict[str, object]:
         return json.loads(response.read())
 
 
-def _wait_for_health(port: int) -> tuple[dict[str, object], dict[str, object]]:
+def _wait_for_health(
+    port: int,
+) -> tuple[dict[str, object], dict[str, object], dict[str, object]]:
     deadline = time.monotonic() + 30
     last_error: Exception | None = None
     while time.monotonic() < deadline:
         try:
-            return _health(port, "/health/live"), _health(port, "/health/ready")
+            return (
+                _health(port, "/health"),
+                _health(port, "/health/live"),
+                _health(port, "/health/ready"),
+            )
         except (OSError, urllib.error.URLError, ContainerSmokeError) as error:
             last_error = error
             time.sleep(0.25)
@@ -118,7 +124,8 @@ def run(image: str, expected_commit: str, evidence_path: Path) -> None:
             raise ContainerSmokeError("docker did not return a container identity")
         started = True
         port = _mapped_port(name)
-        liveness, readiness = _wait_for_health(port)
+        health, liveness, readiness = _wait_for_health(port)
+        _assert_health(health, expected_commit)
         _assert_health(liveness, expected_commit)
         _assert_health(readiness, expected_commit)
 
@@ -142,11 +149,29 @@ def run(image: str, expected_commit: str, evidence_path: Path) -> None:
         event_names = {event.get("event") for event in events}
         if not {"cloud_shutdown_requested", "cloud_service_stopped"} <= event_names:
             raise ContainerSmokeError("graceful shutdown events are missing")
+        stopped_event = next(
+            event for event in events if event.get("event") == "cloud_service_stopped"
+        )
+        final_safety = stopped_event.get("safety")
+        if not isinstance(final_safety, dict):
+            raise ContainerSmokeError("final shutdown safety counters are missing")
+        for name in (
+            "network_call_count",
+            "ig_rest_call_count",
+            "lightstreamer_connection_count",
+            "order_endpoint_call_count",
+            "credential_resolution_count",
+        ):
+            if final_safety.get(name) != 0:
+                raise ContainerSmokeError(f"nonzero final safety counter: {name}")
+        if final_safety.get("broker_modules_loaded") is not False:
+            raise ContainerSmokeError("broker module loaded before shutdown")
 
         evidence = {
             "classification": "PASS_CONTAINER_SMOKE",
             "image": image,
             "expected_commit_sha": expected_commit,
+            "health": health,
             "liveness": liveness,
             "readiness": readiness,
             "graceful_shutdown": {
@@ -154,9 +179,7 @@ def run(image: str, expected_commit: str, evidence_path: Path) -> None:
                 "shutdown_requested_logged": True,
                 "service_stopped_logged": True,
             },
-            "order_endpoint_call_count": readiness["safety"][  # type: ignore[index]
-                "order_endpoint_call_count"
-            ],
+            "safety": final_safety,
         }
         evidence_path.parent.mkdir(parents=True, exist_ok=True)
         evidence_path.write_text(

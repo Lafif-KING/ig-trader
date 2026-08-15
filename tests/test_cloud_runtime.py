@@ -235,10 +235,15 @@ def test_real_launcher_starts_without_credentials_and_stops_gracefully() -> None
             process.communicate(timeout=5)
 
     assert process.returncode == 0, stderr
-    events = [json.loads(line)["event"] for line in stdout.splitlines()]
-    assert "cloud_service_started" in events
-    assert "cloud_shutdown_requested" in events
-    assert "cloud_service_stopped" in events
+    events = [json.loads(line) for line in stdout.splitlines()]
+    event_names = {event["event"] for event in events}
+    assert "cloud_service_started" in event_names
+    assert "cloud_shutdown_requested" in event_names
+    assert "cloud_service_stopped" in event_names
+    stopped = next(event for event in events if event["event"] == "cloud_service_stopped")
+    assert stopped["safety"]["network_call_count"] == 0
+    assert stopped["safety"]["order_endpoint_call_count"] == 0
+    assert stopped["safety"]["broker_modules_loaded"] is False
 
 
 def _reserve_port() -> int:
