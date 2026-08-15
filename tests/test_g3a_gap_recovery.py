@@ -208,7 +208,7 @@ def test_external_artifact_package_detects_mutation(tmp_path: Path) -> None:
     package = tmp_path / "package"
     create_package(package, artifact_id="g3a-test", sources={"source": source})
     packaged_file = package / "payload" / "source" / "raw.json"
-    packaged_file.chmod(stat.S_IWRITE)
+    packaged_file.chmod(stat.S_IRUSR | stat.S_IWUSR)
     packaged_file.write_bytes(b'{"immutable":false}\n')
 
     result = verify_package(package)
