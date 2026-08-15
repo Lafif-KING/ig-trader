@@ -1,0 +1,10 @@
+{
+  "intervals_per_series": 700,
+  "offline_cache_only": true,
+  "raw_cache_run_id": "g3a-01-20260815",
+  "requested_end_utc": "2026-08-14T22:00:00+00:00",
+  "retrieval_started_at_utc": "2026-08-15T12:29:08.456556+00:00",
+  "run_id": "g3a-01-20260815-v4",
+  "schema_version": "g3a-run-state/1.0.0",
+  "work_order": "G3A-01"
+}

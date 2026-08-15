@@ -1,0 +1,125 @@
+{
+  "actual_end_utc": "2026-08-14T20:58:00+00:00",
+  "actual_start_utc": "2026-08-14T10:20:00+00:00",
+  "candle_count": 638,
+  "canonical_schema_version": "g3a-canonical-candle/1.0.0",
+  "detected_gaps": [
+    {
+      "after_utc": "2026-08-14T19:02:00+00:00",
+      "before_utc": "2026-08-14T19:04:00+00:00",
+      "classification": "ACTUAL_MISSING_DATA",
+      "missing_intervals": 1
+    },
+    {
+      "after_utc": "2026-08-14T20:58:00+00:00",
+      "before_utc": "2026-08-14T22:00:00+00:00",
+      "classification": "EXPECTED_MARKET_SESSION_GAP",
+      "missing_intervals": 61
+    }
+  ],
+  "environment": "DEMO",
+  "epic": "CS.D.EURGBP.MINI.IP",
+  "expected_count": 700,
+  "instrument_name": "EUR/GBP Mini",
+  "manifest_fingerprint": "fd54fc80b020d90ff37a94aa426b61896d97235cec3f37fb0dbed98bdeb76038",
+  "normalization_version": "g3a-normalizer/1.0.0",
+  "normalized_data": {
+    "relative_path": "normalized/g3a-01-20260815-v4/EURGBP-MINUTE.jsonl",
+    "sha256": "dcfd1999e3f6925ca5ed183149633c7947c51a52e1caa2c6037d4a1df228b836"
+  },
+  "qualification_result": "PARTIAL_DATA",
+  "quality": {
+    "actual_end_utc": "2026-08-14T20:58:00+00:00",
+    "actual_start_utc": "2026-08-14T10:20:00+00:00",
+    "candle_count": 638,
+    "crossed_bid_offer_anomalies": 0,
+    "detected_gaps": [
+      {
+        "after_utc": "2026-08-14T19:02:00+00:00",
+        "before_utc": "2026-08-14T19:04:00+00:00",
+        "classification": "ACTUAL_MISSING_DATA",
+        "missing_intervals": 1
+      },
+      {
+        "after_utc": "2026-08-14T20:58:00+00:00",
+        "before_utc": "2026-08-14T22:00:00+00:00",
+        "classification": "EXPECTED_MARKET_SESSION_GAP",
+        "missing_intervals": 61
+      }
+    ],
+    "duplicate_timestamps": 0,
+    "expected_count": 700,
+    "invalid_ohlc": 0,
+    "large_market_gaps": [
+      {
+        "after_utc": "2026-08-14T20:58:00+00:00",
+        "before_utc": "2026-08-14T22:00:00+00:00",
+        "classification": "EXPECTED_MARKET_SESSION_GAP",
+        "missing_intervals": 61
+      }
+    ],
+    "missing_intervals": 62,
+    "non_monotonic_timestamps": 0,
+    "reason_codes": [
+      "ACTUAL_MISSING_DATA"
+    ],
+    "stale_sequences": [],
+    "status": "PARTIAL_DATA",
+    "timezone_ambiguity": 0,
+    "zero_or_negative_spread_anomalies": 0
+  },
+  "requested_end_utc": "2026-08-14T22:00:00+00:00",
+  "requested_start_utc": "2026-08-14T10:20:00+00:00",
+  "resolution": "MINUTE",
+  "resolution_label": "1M",
+  "retrieval_completed_at_utc": "2026-08-15T12:30:20.178824+00:00",
+  "retrieval_started_at_utc": "2026-08-15T12:29:08.456556+00:00",
+  "schema_version": "g3a-dataset-manifest/1.0.0",
+  "source": "IG_REST_GET_PRICES_V3",
+  "source_files": [
+    {
+      "relative_path": "raw/g3a-01-20260815/prices-EURGBP-MINUTE-page-001.json",
+      "sha256": "027ab4fd02ceeb9938b02036903a73661ce33d58a928c060c28afc0909a37954",
+      "size_bytes": 170709
+    },
+    {
+      "relative_path": "raw/g3a-01-20260815/prices-EURGBP-MINUTE-page-002.json",
+      "sha256": "c64901ea9ce429895bc7f0656e5bb07d8b7e972c3d821e623cb799cdb5fe749d",
+      "size_bytes": 47259
+    }
+  ],
+  "source_metadata": [
+    {
+      "allowance": {
+        "allowanceExpiry": 520774,
+        "remainingAllowance": 7795,
+        "totalAllowance": 10000
+      },
+      "pageData": {
+        "pageNumber": 1,
+        "pageSize": 500,
+        "totalPages": 2
+      },
+      "page_number": 1,
+      "source_raw_file": "raw/g3a-01-20260815/prices-EURGBP-MINUTE-page-001.json",
+      "source_raw_sha256": "027ab4fd02ceeb9938b02036903a73661ce33d58a928c060c28afc0909a37954"
+    },
+    {
+      "allowance": {
+        "allowanceExpiry": 520772,
+        "remainingAllowance": 7657,
+        "totalAllowance": 10000
+      },
+      "pageData": {
+        "pageNumber": 2,
+        "pageSize": 500,
+        "totalPages": 2
+      },
+      "page_number": 2,
+      "source_raw_file": "raw/g3a-01-20260815/prices-EURGBP-MINUTE-page-002.json",
+      "source_raw_sha256": "c64901ea9ce429895bc7f0656e5bb07d8b7e972c3d821e623cb799cdb5fe749d"
+    }
+  ],
+  "symbol": "EURGBP",
+  "work_order": "G3A-01"
+}

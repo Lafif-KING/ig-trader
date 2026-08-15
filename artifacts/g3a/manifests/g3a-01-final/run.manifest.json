@@ -1,0 +1,138 @@
+{
+  "classification": "PARTIAL_DATA",
+  "dataset_fingerprint": "36fc24a739a7db238d96131be1d6c42a48895eeca1228697771b1736293ecbea",
+  "environment": "DEMO",
+  "instrument_epic_discovery": [
+    {
+      "configured_epic": "CS.D.EURGBP.MINI.IP",
+      "configured_instrument_name": "EUR/GBP Mini",
+      "detail_epic": "CS.D.EURGBP.MINI.IP",
+      "detail_instrument_name": "EUR/GBP Mini",
+      "discovered_epic": "CS.D.EURGBP.MINI.IP",
+      "reason": "VERIFIED",
+      "source_files": [
+        {
+          "relative_path": "raw/g3a-01-20260815/discovery-EURGBP.json",
+          "sha256": "df1bc6a43fcf6419e0bde12071a2e64cba8c1e1b41851fe6459c117b068c7c81",
+          "size_bytes": 709
+        },
+        {
+          "relative_path": "raw/g3a-01-20260815/market-EURGBP.json",
+          "sha256": "e1b1420619bbfe9178c3dceaa95b91988da6ddcb569e1313ecff40dfd071faa5",
+          "size_bytes": 1895
+        }
+      ],
+      "symbol": "EURGBP",
+      "verified": true
+    },
+    {
+      "configured_epic": "CS.D.EURUSD.CEFM.IP",
+      "configured_instrument_name": "EUR/USD Mini",
+      "detail_epic": "CS.D.EURUSD.CEFM.IP",
+      "detail_instrument_name": "EUR/USD Mini",
+      "discovered_epic": "CS.D.EURUSD.CEFM.IP",
+      "reason": "VERIFIED",
+      "source_files": [
+        {
+          "relative_path": "raw/g3a-01-20260815/discovery-EURUSD.json",
+          "sha256": "9be778121f0fc4c3df74186002dc0a2f0886573fee66ad2f755ed9c992113b1a",
+          "size_bytes": 710
+        },
+        {
+          "relative_path": "raw/g3a-01-20260815/market-EURUSD.json",
+          "sha256": "f5b35d196a481720367813e0a6209b2b1499214c82bb8712a7f4c7dde9822abc",
+          "size_bytes": 1886
+        }
+      ],
+      "symbol": "EURUSD",
+      "verified": true
+    },
+    {
+      "configured_epic": "CS.D.GBPUSD.MINI.IP",
+      "configured_instrument_name": "GBP/USD Mini",
+      "detail_epic": "CS.D.GBPUSD.MINI.IP",
+      "detail_instrument_name": "GBP/USD Mini",
+      "discovered_epic": "CS.D.GBPUSD.MINI.IP",
+      "reason": "VERIFIED",
+      "source_files": [
+        {
+          "relative_path": "raw/g3a-01-20260815/discovery-GBPUSD.json",
+          "sha256": "91628d113b4d0c44acff6b0c7a64d3d4cd6e99685c797327d32a87b39fd17d7c",
+          "size_bytes": 708
+        },
+        {
+          "relative_path": "raw/g3a-01-20260815/market-GBPUSD.json",
+          "sha256": "92153336990f3e1b1cff3c6053a3be153f7f2d1b9ce1bdd54fc8c7976a72ea03",
+          "size_bytes": 1891
+        }
+      ],
+      "symbol": "GBPUSD",
+      "verified": true
+    }
+  ],
+  "manifest_fingerprint": "2cd2714e7fe8f68bfd859fe438f2717edbe6b1a0e17c78aea456f4998afc7a62",
+  "retrieval_completed_at_utc": "2026-08-15T12:30:20.178824+00:00",
+  "run_state": {
+    "intervals_per_series": 700,
+    "offline_cache_only": true,
+    "raw_cache_run_id": "g3a-01-20260815",
+    "requested_end_utc": "2026-08-14T22:00:00+00:00",
+    "retrieval_started_at_utc": "2026-08-15T12:29:08.456556+00:00",
+    "run_id": "g3a-01-20260815-v4",
+    "schema_version": "g3a-run-state/1.0.0",
+    "work_order": "G3A-01"
+  },
+  "schema_version": "g3a-run-manifest/1.0.0",
+  "series_manifests": [
+    {
+      "relative_path": "manifests/g3a-01-20260815-v4/EURGBP-HOUR.manifest.json",
+      "sha256": "841b264170914ea157e8253f3f9f2b68ec64b286d42501c4d957548a9f43faa3"
+    },
+    {
+      "relative_path": "manifests/g3a-01-20260815-v4/EURGBP-MINUTE_15.manifest.json",
+      "sha256": "de9ef61ba663d3658ba8e5cb6839cb121bf3620ae547aa384f77838c6cbd1b4c"
+    },
+    {
+      "relative_path": "manifests/g3a-01-20260815-v4/EURGBP-MINUTE_5.manifest.json",
+      "sha256": "a4f714fffd5ef73c7fc64b2535853214bc5c40ec1f87ee720d0689898dfb63f2"
+    },
+    {
+      "relative_path": "manifests/g3a-01-20260815-v4/EURGBP-MINUTE.manifest.json",
+      "sha256": "a94dd1cc221b869a8e8ec0e44e790e720eb846ae6b6439332610dae645ee6868"
+    },
+    {
+      "relative_path": "manifests/g3a-01-20260815-v4/EURUSD-HOUR.manifest.json",
+      "sha256": "3ab194e4a6810980a19b98155eed8df6469b9046d61a8d6fa923014afba5509d"
+    },
+    {
+      "relative_path": "manifests/g3a-01-20260815-v4/EURUSD-MINUTE_15.manifest.json",
+      "sha256": "24b836e38a76e312586e753fc08408d46e22d2f6b0cb12a986b4ab996e8b86eb"
+    },
+    {
+      "relative_path": "manifests/g3a-01-20260815-v4/EURUSD-MINUTE_5.manifest.json",
+      "sha256": "2f74c0f7869b01e96e599365927260bbb33259ab5c5171113601a968fbafe108"
+    },
+    {
+      "relative_path": "manifests/g3a-01-20260815-v4/EURUSD-MINUTE.manifest.json",
+      "sha256": "8ee437011018721b45ec9d2dfc6be1fe9ecfa4a0075c735cc886c4d218ba324d"
+    },
+    {
+      "relative_path": "manifests/g3a-01-20260815-v4/GBPUSD-HOUR.manifest.json",
+      "sha256": "21a022f3ebddfa93c17ca332591b5106631b8ad49c0a2f1ae0cf74e92f838f23"
+    },
+    {
+      "relative_path": "manifests/g3a-01-20260815-v4/GBPUSD-MINUTE_15.manifest.json",
+      "sha256": "d36b5718470bc917a15ccdbc8ca754085b110e7086e9fccace73fbb2a7b082cd"
+    },
+    {
+      "relative_path": "manifests/g3a-01-20260815-v4/GBPUSD-MINUTE_5.manifest.json",
+      "sha256": "548b5680d9ec1aca1bba3602a239e18b2227f46726c409fae054172b9960eea8"
+    },
+    {
+      "relative_path": "manifests/g3a-01-20260815-v4/GBPUSD-MINUTE.manifest.json",
+      "sha256": "9f7614da98a1578d539232629c6d4d02e291e0496703efd4c956692ff0643b07"
+    }
+  ],
+  "source": "IG_REST_GET_PRICES_V3",
+  "work_order": "G3A-01"
+}

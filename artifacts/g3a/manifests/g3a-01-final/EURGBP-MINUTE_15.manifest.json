@@ -1,0 +1,135 @@
+{
+  "actual_end_utc": "2026-08-14T20:45:00+00:00",
+  "actual_start_utc": "2026-08-07T15:00:00+00:00",
+  "candle_count": 508,
+  "canonical_schema_version": "g3a-canonical-candle/1.0.0",
+  "detected_gaps": [
+    {
+      "after_utc": "2026-08-07T20:45:00+00:00",
+      "before_utc": "2026-08-07T22:00:00+00:00",
+      "classification": "EXPECTED_MARKET_SESSION_GAP",
+      "missing_intervals": 4
+    },
+    {
+      "after_utc": "2026-08-07T21:45:00+00:00",
+      "before_utc": "2026-08-09T20:00:00+00:00",
+      "classification": "EXPECTED_WEEKEND_CLOSURE",
+      "missing_intervals": 184
+    },
+    {
+      "after_utc": "2026-08-14T20:45:00+00:00",
+      "before_utc": "2026-08-14T22:00:00+00:00",
+      "classification": "EXPECTED_MARKET_SESSION_GAP",
+      "missing_intervals": 4
+    }
+  ],
+  "environment": "DEMO",
+  "epic": "CS.D.EURGBP.MINI.IP",
+  "expected_count": 512,
+  "instrument_name": "EUR/GBP Mini",
+  "manifest_fingerprint": "74dd2efd31265f5b8efaba43ce8b5ebf30f35c68f1a4d790e38a46a83b3c77b7",
+  "normalization_version": "g3a-normalizer/1.0.0",
+  "normalized_data": {
+    "relative_path": "normalized/g3a-01-20260815-v4/EURGBP-MINUTE_15.jsonl",
+    "sha256": "88d32aa944fcd4c6d013bb98aa1e785874db68b7c925c7c3ecb77cc269563790"
+  },
+  "qualification_result": "QUALIFIED",
+  "quality": {
+    "actual_end_utc": "2026-08-14T20:45:00+00:00",
+    "actual_start_utc": "2026-08-07T15:00:00+00:00",
+    "candle_count": 508,
+    "crossed_bid_offer_anomalies": 0,
+    "detected_gaps": [
+      {
+        "after_utc": "2026-08-07T20:45:00+00:00",
+        "before_utc": "2026-08-07T22:00:00+00:00",
+        "classification": "EXPECTED_MARKET_SESSION_GAP",
+        "missing_intervals": 4
+      },
+      {
+        "after_utc": "2026-08-07T21:45:00+00:00",
+        "before_utc": "2026-08-09T20:00:00+00:00",
+        "classification": "EXPECTED_WEEKEND_CLOSURE",
+        "missing_intervals": 184
+      },
+      {
+        "after_utc": "2026-08-14T20:45:00+00:00",
+        "before_utc": "2026-08-14T22:00:00+00:00",
+        "classification": "EXPECTED_MARKET_SESSION_GAP",
+        "missing_intervals": 4
+      }
+    ],
+    "duplicate_timestamps": 0,
+    "expected_count": 512,
+    "invalid_ohlc": 0,
+    "large_market_gaps": [
+      {
+        "after_utc": "2026-08-07T21:45:00+00:00",
+        "before_utc": "2026-08-09T20:00:00+00:00",
+        "classification": "EXPECTED_WEEKEND_CLOSURE",
+        "missing_intervals": 184
+      }
+    ],
+    "missing_intervals": 192,
+    "non_monotonic_timestamps": 0,
+    "reason_codes": [],
+    "stale_sequences": [],
+    "status": "QUALIFIED",
+    "timezone_ambiguity": 0,
+    "zero_or_negative_spread_anomalies": 0
+  },
+  "requested_end_utc": "2026-08-14T22:00:00+00:00",
+  "requested_start_utc": "2026-08-07T15:00:00+00:00",
+  "resolution": "MINUTE_15",
+  "resolution_label": "15M",
+  "retrieval_completed_at_utc": "2026-08-15T12:30:20.178824+00:00",
+  "retrieval_started_at_utc": "2026-08-15T12:29:08.456556+00:00",
+  "schema_version": "g3a-dataset-manifest/1.0.0",
+  "source": "IG_REST_GET_PRICES_V3",
+  "source_files": [
+    {
+      "relative_path": "raw/g3a-01-20260815/prices-EURGBP-MINUTE_15-page-001.json",
+      "sha256": "e17ac3df294deec5aa53b5520de42fca5b9be00a3e020c0c2c567889b5cc1db4",
+      "size_bytes": 171211
+    },
+    {
+      "relative_path": "raw/g3a-01-20260815/prices-EURGBP-MINUTE_15-page-002.json",
+      "sha256": "06efb5ffd4f1cfff2e3e2663cb989ae7099b1068ee93afffc987c57293a245e7",
+      "size_bytes": 2948
+    }
+  ],
+  "source_metadata": [
+    {
+      "allowance": {
+        "allowanceExpiry": 520783,
+        "remainingAllowance": 8991,
+        "totalAllowance": 10000
+      },
+      "pageData": {
+        "pageNumber": 1,
+        "pageSize": 500,
+        "totalPages": 2
+      },
+      "page_number": 1,
+      "source_raw_file": "raw/g3a-01-20260815/prices-EURGBP-MINUTE_15-page-001.json",
+      "source_raw_sha256": "e17ac3df294deec5aa53b5520de42fca5b9be00a3e020c0c2c567889b5cc1db4"
+    },
+    {
+      "allowance": {
+        "allowanceExpiry": 520781,
+        "remainingAllowance": 8983,
+        "totalAllowance": 10000
+      },
+      "pageData": {
+        "pageNumber": 2,
+        "pageSize": 500,
+        "totalPages": 2
+      },
+      "page_number": 2,
+      "source_raw_file": "raw/g3a-01-20260815/prices-EURGBP-MINUTE_15-page-002.json",
+      "source_raw_sha256": "06efb5ffd4f1cfff2e3e2663cb989ae7099b1068ee93afffc987c57293a245e7"
+    }
+  ],
+  "symbol": "EURGBP",
+  "work_order": "G3A-01"
+}

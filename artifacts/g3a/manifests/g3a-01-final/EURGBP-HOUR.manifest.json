@@ -1,0 +1,237 @@
+{
+  "actual_end_utc": "2026-08-14T20:00:00+00:00",
+  "actual_start_utc": "2026-07-16T18:00:00+00:00",
+  "candle_count": 508,
+  "canonical_schema_version": "g3a-canonical-candle/1.0.0",
+  "detected_gaps": [
+    {
+      "after_utc": "2026-07-17T20:00:00+00:00",
+      "before_utc": "2026-07-17T22:00:00+00:00",
+      "classification": "EXPECTED_MARKET_SESSION_GAP",
+      "missing_intervals": 1
+    },
+    {
+      "after_utc": "2026-07-17T21:00:00+00:00",
+      "before_utc": "2026-07-19T21:00:00+00:00",
+      "classification": "EXPECTED_WEEKEND_CLOSURE",
+      "missing_intervals": 47
+    },
+    {
+      "after_utc": "2026-07-19T20:00:00+00:00",
+      "before_utc": "2026-07-19T23:00:00+00:00",
+      "classification": "EXPECTED_MARKET_SESSION_GAP",
+      "missing_intervals": 2
+    },
+    {
+      "after_utc": "2026-07-24T20:00:00+00:00",
+      "before_utc": "2026-07-24T22:00:00+00:00",
+      "classification": "EXPECTED_MARKET_SESSION_GAP",
+      "missing_intervals": 1
+    },
+    {
+      "after_utc": "2026-07-24T21:00:00+00:00",
+      "before_utc": "2026-07-26T20:00:00+00:00",
+      "classification": "EXPECTED_WEEKEND_CLOSURE",
+      "missing_intervals": 46
+    },
+    {
+      "after_utc": "2026-07-31T20:00:00+00:00",
+      "before_utc": "2026-07-31T22:00:00+00:00",
+      "classification": "EXPECTED_MARKET_SESSION_GAP",
+      "missing_intervals": 1
+    },
+    {
+      "after_utc": "2026-07-31T21:00:00+00:00",
+      "before_utc": "2026-08-02T20:00:00+00:00",
+      "classification": "EXPECTED_WEEKEND_CLOSURE",
+      "missing_intervals": 46
+    },
+    {
+      "after_utc": "2026-08-07T20:00:00+00:00",
+      "before_utc": "2026-08-07T22:00:00+00:00",
+      "classification": "EXPECTED_MARKET_SESSION_GAP",
+      "missing_intervals": 1
+    },
+    {
+      "after_utc": "2026-08-07T21:00:00+00:00",
+      "before_utc": "2026-08-09T20:00:00+00:00",
+      "classification": "EXPECTED_WEEKEND_CLOSURE",
+      "missing_intervals": 46
+    },
+    {
+      "after_utc": "2026-08-14T20:00:00+00:00",
+      "before_utc": "2026-08-14T22:00:00+00:00",
+      "classification": "EXPECTED_MARKET_SESSION_GAP",
+      "missing_intervals": 1
+    }
+  ],
+  "environment": "DEMO",
+  "epic": "CS.D.EURGBP.MINI.IP",
+  "expected_count": 512,
+  "instrument_name": "EUR/GBP Mini",
+  "manifest_fingerprint": "6aeb671f0eacaab8db7ab08c6df904bc205a0f197912e80d64be1115869732e8",
+  "normalization_version": "g3a-normalizer/1.0.0",
+  "normalized_data": {
+    "relative_path": "normalized/g3a-01-20260815-v4/EURGBP-HOUR.jsonl",
+    "sha256": "196c04d701769fa86136e8d8822ca787948faa96ea1d6fa834f9eb9f19c36e68"
+  },
+  "qualification_result": "QUALIFIED",
+  "quality": {
+    "actual_end_utc": "2026-08-14T20:00:00+00:00",
+    "actual_start_utc": "2026-07-16T18:00:00+00:00",
+    "candle_count": 508,
+    "crossed_bid_offer_anomalies": 0,
+    "detected_gaps": [
+      {
+        "after_utc": "2026-07-17T20:00:00+00:00",
+        "before_utc": "2026-07-17T22:00:00+00:00",
+        "classification": "EXPECTED_MARKET_SESSION_GAP",
+        "missing_intervals": 1
+      },
+      {
+        "after_utc": "2026-07-17T21:00:00+00:00",
+        "before_utc": "2026-07-19T21:00:00+00:00",
+        "classification": "EXPECTED_WEEKEND_CLOSURE",
+        "missing_intervals": 47
+      },
+      {
+        "after_utc": "2026-07-19T20:00:00+00:00",
+        "before_utc": "2026-07-19T23:00:00+00:00",
+        "classification": "EXPECTED_MARKET_SESSION_GAP",
+        "missing_intervals": 2
+      },
+      {
+        "after_utc": "2026-07-24T20:00:00+00:00",
+        "before_utc": "2026-07-24T22:00:00+00:00",
+        "classification": "EXPECTED_MARKET_SESSION_GAP",
+        "missing_intervals": 1
+      },
+      {
+        "after_utc": "2026-07-24T21:00:00+00:00",
+        "before_utc": "2026-07-26T20:00:00+00:00",
+        "classification": "EXPECTED_WEEKEND_CLOSURE",
+        "missing_intervals": 46
+      },
+      {
+        "after_utc": "2026-07-31T20:00:00+00:00",
+        "before_utc": "2026-07-31T22:00:00+00:00",
+        "classification": "EXPECTED_MARKET_SESSION_GAP",
+        "missing_intervals": 1
+      },
+      {
+        "after_utc": "2026-07-31T21:00:00+00:00",
+        "before_utc": "2026-08-02T20:00:00+00:00",
+        "classification": "EXPECTED_WEEKEND_CLOSURE",
+        "missing_intervals": 46
+      },
+      {
+        "after_utc": "2026-08-07T20:00:00+00:00",
+        "before_utc": "2026-08-07T22:00:00+00:00",
+        "classification": "EXPECTED_MARKET_SESSION_GAP",
+        "missing_intervals": 1
+      },
+      {
+        "after_utc": "2026-08-07T21:00:00+00:00",
+        "before_utc": "2026-08-09T20:00:00+00:00",
+        "classification": "EXPECTED_WEEKEND_CLOSURE",
+        "missing_intervals": 46
+      },
+      {
+        "after_utc": "2026-08-14T20:00:00+00:00",
+        "before_utc": "2026-08-14T22:00:00+00:00",
+        "classification": "EXPECTED_MARKET_SESSION_GAP",
+        "missing_intervals": 1
+      }
+    ],
+    "duplicate_timestamps": 0,
+    "expected_count": 512,
+    "invalid_ohlc": 0,
+    "large_market_gaps": [
+      {
+        "after_utc": "2026-07-17T21:00:00+00:00",
+        "before_utc": "2026-07-19T21:00:00+00:00",
+        "classification": "EXPECTED_WEEKEND_CLOSURE",
+        "missing_intervals": 47
+      },
+      {
+        "after_utc": "2026-07-24T21:00:00+00:00",
+        "before_utc": "2026-07-26T20:00:00+00:00",
+        "classification": "EXPECTED_WEEKEND_CLOSURE",
+        "missing_intervals": 46
+      },
+      {
+        "after_utc": "2026-07-31T21:00:00+00:00",
+        "before_utc": "2026-08-02T20:00:00+00:00",
+        "classification": "EXPECTED_WEEKEND_CLOSURE",
+        "missing_intervals": 46
+      },
+      {
+        "after_utc": "2026-08-07T21:00:00+00:00",
+        "before_utc": "2026-08-09T20:00:00+00:00",
+        "classification": "EXPECTED_WEEKEND_CLOSURE",
+        "missing_intervals": 46
+      }
+    ],
+    "missing_intervals": 192,
+    "non_monotonic_timestamps": 0,
+    "reason_codes": [],
+    "stale_sequences": [],
+    "status": "QUALIFIED",
+    "timezone_ambiguity": 0,
+    "zero_or_negative_spread_anomalies": 0
+  },
+  "requested_end_utc": "2026-08-14T22:00:00+00:00",
+  "requested_start_utc": "2026-07-16T18:00:00+00:00",
+  "resolution": "HOUR",
+  "resolution_label": "1H",
+  "retrieval_completed_at_utc": "2026-08-15T12:30:20.178824+00:00",
+  "retrieval_started_at_utc": "2026-08-15T12:29:08.456556+00:00",
+  "schema_version": "g3a-dataset-manifest/1.0.0",
+  "source": "IG_REST_GET_PRICES_V3",
+  "source_files": [
+    {
+      "relative_path": "raw/g3a-01-20260815/prices-EURGBP-HOUR-page-001.json",
+      "sha256": "66bce234cae75439badf59f71bfa610aec4b2067d46ca9e076cd9c85638242a0",
+      "size_bytes": 171652
+    },
+    {
+      "relative_path": "raw/g3a-01-20260815/prices-EURGBP-HOUR-page-002.json",
+      "sha256": "c7d3b90503857c21cfe88be9a920e4c94fd28ebabb7fe30c267c2ba447f78fa0",
+      "size_bytes": 2956
+    }
+  ],
+  "source_metadata": [
+    {
+      "allowance": {
+        "allowanceExpiry": 520788,
+        "remainingAllowance": 9499,
+        "totalAllowance": 10000
+      },
+      "pageData": {
+        "pageNumber": 1,
+        "pageSize": 500,
+        "totalPages": 2
+      },
+      "page_number": 1,
+      "source_raw_file": "raw/g3a-01-20260815/prices-EURGBP-HOUR-page-001.json",
+      "source_raw_sha256": "66bce234cae75439badf59f71bfa610aec4b2067d46ca9e076cd9c85638242a0"
+    },
+    {
+      "allowance": {
+        "allowanceExpiry": 520785,
+        "remainingAllowance": 9491,
+        "totalAllowance": 10000
+      },
+      "pageData": {
+        "pageNumber": 2,
+        "pageSize": 500,
+        "totalPages": 2
+      },
+      "page_number": 2,
+      "source_raw_file": "raw/g3a-01-20260815/prices-EURGBP-HOUR-page-002.json",
+      "source_raw_sha256": "c7d3b90503857c21cfe88be9a920e4c94fd28ebabb7fe30c267c2ba447f78fa0"
+    }
+  ],
+  "symbol": "EURGBP",
+  "work_order": "G3A-01"
+}

@@ -1,0 +1,35 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ig-trader.local/schemas/gap-aware-replay-policy-v1.json",
+  "title": "GAP_AWARE_REPLAY_V1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "policy_id",
+    "version",
+    "trigger",
+    "affected_signal_evaluation",
+    "discontinuous_indicator_state",
+    "warmup_rebuild",
+    "resume_condition",
+    "gap_event_recording",
+    "interpolation",
+    "carry_forward",
+    "cross_instrument_or_provider_borrowing"
+  ],
+  "properties": {
+    "policy_id": { "const": "GAP_AWARE_REPLAY_V1" },
+    "version": { "const": "1.0.0" },
+    "trigger": { "const": "AUTHORITATIVE_REQUIRED_INTERVAL_MISSING" },
+    "affected_signal_evaluation": { "const": "NO_TRADE" },
+    "discontinuous_indicator_state": { "const": "INVALIDATED" },
+    "warmup_rebuild": { "const": "SUBSEQUENT_AUTHORITATIVE_CANDLES_ONLY" },
+    "resume_condition": {
+      "const": "EVERY_REQUIRED_TIMEFRAME_AND_INDICATOR_VALID_AFTER_FULL_WARMUP"
+    },
+    "gap_event_recording": { "const": "REQUIRED_IN_REPLAY_EVIDENCE" },
+    "interpolation": { "const": "PROHIBITED" },
+    "carry_forward": { "const": "PROHIBITED" },
+    "cross_instrument_or_provider_borrowing": { "const": "PROHIBITED" }
+  }
+}

@@ -1,0 +1,111 @@
+{
+  "actual_end_utc": "2026-08-14T20:55:00+00:00",
+  "actual_start_utc": "2026-08-12T11:40:00+00:00",
+  "candle_count": 688,
+  "canonical_schema_version": "g3a-canonical-candle/1.0.0",
+  "detected_gaps": [
+    {
+      "after_utc": "2026-08-14T20:55:00+00:00",
+      "before_utc": "2026-08-14T22:00:00+00:00",
+      "classification": "EXPECTED_MARKET_SESSION_GAP",
+      "missing_intervals": 12
+    }
+  ],
+  "environment": "DEMO",
+  "epic": "CS.D.GBPUSD.MINI.IP",
+  "expected_count": 700,
+  "instrument_name": "GBP/USD Mini",
+  "manifest_fingerprint": "4fd607ca592266b8f81b0e4e17def6d0d0e1919a4a218adc4bec743fd758e6ff",
+  "normalization_version": "g3a-normalizer/1.0.0",
+  "normalized_data": {
+    "relative_path": "normalized/g3a-01-20260815-v4/GBPUSD-MINUTE_5.jsonl",
+    "sha256": "f38305c0d278118195a33c147c7be76492debb8cb2f892d09b23f90f13cfa246"
+  },
+  "qualification_result": "QUALIFIED",
+  "quality": {
+    "actual_end_utc": "2026-08-14T20:55:00+00:00",
+    "actual_start_utc": "2026-08-12T11:40:00+00:00",
+    "candle_count": 688,
+    "crossed_bid_offer_anomalies": 0,
+    "detected_gaps": [
+      {
+        "after_utc": "2026-08-14T20:55:00+00:00",
+        "before_utc": "2026-08-14T22:00:00+00:00",
+        "classification": "EXPECTED_MARKET_SESSION_GAP",
+        "missing_intervals": 12
+      }
+    ],
+    "duplicate_timestamps": 0,
+    "expected_count": 700,
+    "invalid_ohlc": 0,
+    "large_market_gaps": [
+      {
+        "after_utc": "2026-08-14T20:55:00+00:00",
+        "before_utc": "2026-08-14T22:00:00+00:00",
+        "classification": "EXPECTED_MARKET_SESSION_GAP",
+        "missing_intervals": 12
+      }
+    ],
+    "missing_intervals": 12,
+    "non_monotonic_timestamps": 0,
+    "reason_codes": [],
+    "stale_sequences": [],
+    "status": "QUALIFIED",
+    "timezone_ambiguity": 0,
+    "zero_or_negative_spread_anomalies": 0
+  },
+  "requested_end_utc": "2026-08-14T22:00:00+00:00",
+  "requested_start_utc": "2026-08-12T11:40:00+00:00",
+  "resolution": "MINUTE_5",
+  "resolution_label": "5M",
+  "retrieval_completed_at_utc": "2026-08-15T12:30:20.178824+00:00",
+  "retrieval_started_at_utc": "2026-08-15T12:29:08.456556+00:00",
+  "schema_version": "g3a-dataset-manifest/1.0.0",
+  "source": "IG_REST_GET_PRICES_V3",
+  "source_files": [
+    {
+      "relative_path": "raw/g3a-01-20260815/prices-GBPUSD-MINUTE_5-page-001.json",
+      "sha256": "7d4292980c191c43df7612c14a40e15dff52e76f64454be84a16e9c4adb78406",
+      "size_bytes": 171085
+    },
+    {
+      "relative_path": "raw/g3a-01-20260815/prices-GBPUSD-MINUTE_5-page-002.json",
+      "sha256": "1bc2de60577e43948966b564d3c5c7d618eb945011337b95b87404570a5e4227",
+      "size_bytes": 64498
+    }
+  ],
+  "source_metadata": [
+    {
+      "allowance": {
+        "allowanceExpiry": 520742,
+        "remainingAllowance": 3799,
+        "totalAllowance": 10000
+      },
+      "pageData": {
+        "pageNumber": 1,
+        "pageSize": 500,
+        "totalPages": 2
+      },
+      "page_number": 1,
+      "source_raw_file": "raw/g3a-01-20260815/prices-GBPUSD-MINUTE_5-page-001.json",
+      "source_raw_sha256": "7d4292980c191c43df7612c14a40e15dff52e76f64454be84a16e9c4adb78406"
+    },
+    {
+      "allowance": {
+        "allowanceExpiry": 520739,
+        "remainingAllowance": 3611,
+        "totalAllowance": 10000
+      },
+      "pageData": {
+        "pageNumber": 2,
+        "pageSize": 500,
+        "totalPages": 2
+      },
+      "page_number": 2,
+      "source_raw_file": "raw/g3a-01-20260815/prices-GBPUSD-MINUTE_5-page-002.json",
+      "source_raw_sha256": "1bc2de60577e43948966b564d3c5c7d618eb945011337b95b87404570a5e4227"
+    }
+  ],
+  "symbol": "GBPUSD",
+  "work_order": "G3A-01"
+}

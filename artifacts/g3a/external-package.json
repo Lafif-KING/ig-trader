@@ -1,0 +1,14 @@
+{
+  "schema_version": "g3a-external-artifact-pointer/1.0.0",
+  "artifact_id": "g3a-02-20260815",
+  "local_package_path": "C:\\Users\\AfifB\\projects\\ig-trader-artifacts\\g3a-02-20260815",
+  "package_manifest_sha256": "c6469e45f743204dafd05361e0522c965398529466015568dad9fabd8a98b6d4",
+  "package_fingerprint": "61442f9cf91260ed32098767a206ef45e9d45ea3dc17c93572cba3111eff3780",
+  "file_count": 125,
+  "total_size_bytes": 15583812,
+  "verification_status": "PASS",
+  "dataset_fingerprint": "36fc24a739a7db238d96131be1d6c42a48895eeca1228697771b1736293ecbea",
+  "g3a02_evidence_fingerprint": "a9340169f679452996fedb012c53aab005fd122d2c01f57c0f7aab9b4c3e523c",
+  "final_classification": "PARTIAL_DATA_WITH_VALID_GAP_POLICY",
+  "verification_command": "poetry run python -m tools.g3a_artifact_package verify --package-root C:\\Users\\AfifB\\projects\\ig-trader-artifacts\\g3a-02-20260815"
+}
