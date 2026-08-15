@@ -15,6 +15,12 @@ from pathlib import Path
 import pytest
 
 from src.ig_trader.g3a_data import RESOLUTION_MINUTES, CanonicalCandle
+from src.ig_trader.g3b_replay.account_state import (
+    ACCEPTED_G2_COMMIT_SHA,
+    ACCEPTED_G2_FIXTURE_SHA256,
+    G2QualificationState,
+    QualificationAccountStateGap,
+)
 from src.ig_trader.g3b_replay.data import (
     AUTHORITATIVE_GAP_EPIC,
     AUTHORITATIVE_GAP_TIMESTAMP,
@@ -35,18 +41,21 @@ from src.ig_trader.g3b_replay.engine import (
     resolve_exit,
 )
 from src.ig_trader.g3b_replay.reporting import canonical_bytes
-from src.ig_trader.offline_paper.conductor import FrozenV1Config
+from src.ig_trader.offline_paper.conductor import FrozenV1Config, PortfolioRisk
 from src.ig_trader.offline_paper.domain import (
     AccountSnapshot,
     Position,
     Quote,
+    RiskDecision,
     Side,
     Signal,
     TradeCandidate,
 )
+from src.ig_trader.offline_paper.paper_broker import PaperBroker
 
 ROOT = Path(__file__).resolve().parents[1]
 POINTER = ROOT / "artifacts" / "g3a" / "external-package.json"
+QUALIFICATION_FIXTURE = ROOT / "fixtures" / "g2-offline-paper-market.json"
 
 
 def _package_root() -> Path:
@@ -63,11 +72,25 @@ def accepted_dataset() -> ReplayDataset:
 
 
 @pytest.fixture(scope="module")
-def replay_document(accepted_dataset: ReplayDataset) -> dict[str, object]:
+def qualification_state() -> G2QualificationState:
+    return G2QualificationState.load(QUALIFICATION_FIXTURE)
+
+
+@pytest.fixture(scope="module")
+def replay_document(
+    accepted_dataset: ReplayDataset,
+    qualification_state: G2QualificationState,
+    tmp_path_factory: pytest.TempPathFactory,
+) -> dict[str, object]:
+    broker = qualification_state.create_paper_broker(
+        tmp_path_factory.mktemp("g3b-replay") / "paper-broker.db"
+    )
     return ExactReplayEngine(
         accepted_dataset,
         commit_sha="0" * 40,
         network_metrics=_zero_network(),
+        qualification_state=qualification_state,
+        paper_broker=broker,
     ).run()
 
 
@@ -213,6 +236,89 @@ def test_frozen_parameters_and_configuration_hash_are_exact() -> None:
         "maximum_daily_loss_fraction": 0.05,
     }
     assert len(frozen_replay_configuration_hash(config)) == 64
+
+
+def test_accepted_g2_account_state_provenance_hash_and_exact_epic_policy(
+    qualification_state: G2QualificationState,
+    tmp_path: Path,
+) -> None:
+    document = qualification_state.document()
+    broker = qualification_state.create_paper_broker(tmp_path / "paper-broker.db")
+    captured_at = datetime(2026, 8, 14, 12, 0, tzinfo=UTC)
+    snapshot = broker.account_snapshot(as_of=captured_at)
+
+    assert isinstance(broker, PaperBroker)
+    assert snapshot is not None
+    assert snapshot.state_known
+    assert snapshot.captured_at == captured_at
+    assert snapshot.balance == snapshot.starting_balance == 10_000.0
+    assert snapshot.positions == ()
+    assert document["accepted_g2_commit_sha"] == ACCEPTED_G2_COMMIT_SHA
+    assert document["fixture_sha256"] == ACCEPTED_G2_FIXTURE_SHA256
+    assert document["qualification_account_state_hash"] == (
+        "3f180e98de682edae72ea2f96d61b349ba8d0309a6ec9a1bd6a426e510863b84"
+    )
+    assert qualification_state.pip_value_account_currency("CS.D.GBPUSD.MINI.IP") == 1.0
+    assert qualification_state.pip_value_account_currency("CS.D.EURUSD.CEFM.IP") is None
+
+
+def test_changed_qualification_fixture_is_a_classified_account_state_gap(
+    tmp_path: Path,
+) -> None:
+    changed = tmp_path / "changed-g2-fixture.json"
+    changed.write_bytes(
+        QUALIFICATION_FIXTURE.read_bytes().replace(
+            b'"starting_balance": 10000.0', b'"starting_balance": 9000.0'
+        )
+    )
+
+    with pytest.raises(QualificationAccountStateGap, match="differs from accepted G2"):
+        G2QualificationState.load(changed)
+
+
+def test_existing_portfolio_risk_remains_the_authoritative_allow_path(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    candidate = _candidate(Side.BUY, atr=0.0002, spread_pips=0.4)
+    calls: list[tuple[object, int, float]] = []
+
+    def veto(
+        self: PortfolioRisk,
+        observed: TradeCandidate,
+        *,
+        account: object,
+        executions_in_cycle: int,
+        stop_pips: float,
+    ) -> RiskDecision:
+        del self
+        calls.append((account, executions_in_cycle, stop_pips))
+        assert observed is candidate
+        return RiskDecision(
+            False,
+            "PORTFOLIO_RISK_SENTINEL",
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
+
+    monkeypatch.setattr(PortfolioRisk, "evaluate", veto)
+    account = _account(candidate.quote.timestamp)
+
+    decision = evaluate_candidate(
+        candidate,
+        config=FrozenV1Config(),
+        account=account,
+        executions_in_cycle=0,
+    )
+
+    assert decision.code == "PORTFOLIO_RISK_SENTINEL"
+    assert calls == [(account, 0, 4.0)]
 
 
 @pytest.mark.parametrize(
@@ -414,11 +520,16 @@ def test_exit_does_not_use_non_executable_side(side: Side) -> None:
 def test_replay_is_value_equivalent_and_has_expected_signal_rejections(
     accepted_dataset: ReplayDataset,
     replay_document: dict[str, object],
+    qualification_state: G2QualificationState,
+    tmp_path: Path,
 ) -> None:
+    broker = qualification_state.create_paper_broker(tmp_path / "repeated-broker.db")
     repeated = ExactReplayEngine(
         accepted_dataset,
         commit_sha="0" * 40,
         network_metrics=_zero_network(),
+        qualification_state=qualification_state,
+        paper_broker=broker,
     ).run()
 
     assert canonical_bytes(replay_document) == canonical_bytes(repeated)
@@ -432,14 +543,99 @@ def test_replay_is_value_equivalent_and_has_expected_signal_rejections(
         "NO_TRADE": 1897,
     }
     assert replay_document["metrics"]["rejection_reasons"] == {
-        "ACCOUNT_STATE_UNKNOWN": 8,
         "SPREAD_TARGET_RATIO_EXCEEDED": 10,
+        "TOTAL_POSITION_LIMIT": 4,
     }
-    assert replay_document["metrics"]["risk_rejections"] == 8
+    assert replay_document["metrics"]["risk_rejections"] == 4
     assert replay_document["metrics"]["spread_rejections"] == 10
     assert replay_document["metrics"]["duplicate_execution_attempts_prevented"] == 2
-    assert replay_document["metrics"]["executed_paper_trades"] == 0
-    assert replay_document["performance_evidence_classification"] == "NO_TRADES"
+    assert replay_document["metrics"]["executed_paper_trades"] == 4
+    assert replay_document["metrics"]["closed_paper_trades"] == 4
+    assert replay_document["performance_evidence_classification"] == (
+        "NEGATIVE_ON_AVAILABLE_SAMPLE"
+    )
+    assert replay_document["final_recommendation"] == "PASS_FOR_G3B_MERGE"
+
+
+def test_candidate_audit_has_all_twenty_original_candidates_and_exact_dispositions(
+    replay_document: dict[str, object],
+) -> None:
+    audit = replay_document["candidate_audit"]
+    expected_fields = {
+        "candidate_id",
+        "epic",
+        "decision_timestamp_utc",
+        "side",
+        "confidence",
+        "spread_pips",
+        "target_pips",
+        "spread_target_ratio",
+        "account_state_result",
+        "portfolio_risk_result",
+        "final_disposition",
+        "intent_id",
+    }
+
+    assert len(audit) == 20
+    assert len({item["candidate_id"] for item in audit}) == 20
+    assert all(expected_fields <= item.keys() for item in audit)
+    assert all(
+        item["account_state_result"] == "KNOWN_AUTHORITATIVE_G2_PAPER_STATE" for item in audit
+    )
+    assert replay_document["candidate_disposition_counts"] == {
+        "STRATEGY_NO_SIGNAL": 1604,
+        "SPREAD_REJECTION": 10,
+        "RISK_REJECTION_ACCOUNT_STATE": 0,
+        "RISK_REJECTION_OTHER": 4,
+        "CYCLE_SUPPRESSED": 2,
+        "TRADEINTENT_ACCEPTED": 4,
+    }
+
+    spread_rejected = [item for item in audit if item["final_disposition"] == "SPREAD_REJECTION"]
+    position_rejected = [
+        item for item in audit if item["portfolio_risk_result"] == "TOTAL_POSITION_LIMIT"
+    ]
+    accepted = [item for item in audit if item["final_disposition"] == "TRADEINTENT_ACCEPTED"]
+    assert len(spread_rejected) == 10
+    assert all(
+        item["portfolio_risk_result"].startswith("NOT_EVALUATED_PRE_PORTFOLIO_GATE")
+        for item in spread_rejected
+    )
+    assert len(position_rejected) == 4
+    assert all(item["account_snapshot"]["open_positions"] == 1 for item in position_rejected)
+    assert len(accepted) == 4
+    assert all(item["portfolio_risk_result"] == "ALLOWED" for item in accepted)
+    assert all(item["intent_id"] for item in accepted)
+
+
+def test_paper_broker_execution_and_negative_limited_performance_are_exact(
+    replay_document: dict[str, object],
+) -> None:
+    metrics = replay_document["metrics"]
+    trades = replay_document["trade_execution_audit"]
+    accepted_intents = {
+        item["intent_id"]
+        for item in replay_document["candidate_audit"]
+        if item["final_disposition"] == "TRADEINTENT_ACCEPTED"
+    }
+
+    assert metrics["paper_broker_fills"] == metrics["closed_paper_trades"] == 4
+    assert metrics["wins"] == 0
+    assert metrics["losses"] == 4
+    assert metrics["net_spread_adjusted_result_pips"] == pytest.approx(-16.0)
+    assert metrics["result_r_multiples"] == pytest.approx(-4.0)
+    assert metrics["maximum_drawdown_pips"] == pytest.approx(16.0)
+    assert metrics["maximum_consecutive_losses"] == 4
+    assert metrics["average_holding_duration_seconds"] == 540.0
+    assert metrics["profit_loss_account_currency"] == pytest.approx(-59.8)
+    assert metrics["open_at_dataset_end"] == 0
+    assert len(trades) == 4
+    assert {item["intent_id"] for item in trades} == accepted_intents
+    assert all(item["reason"] == "STOP" for item in trades)
+    assert all(item["net_pips"] == pytest.approx(-4.0) for item in trades)
+    assert replay_document["account_and_risk_state"]["final_snapshot"]["balance"] == pytest.approx(
+        9_940.2
+    )
 
 
 def test_cli_proves_zero_network_ig_stream_order_and_credentials(tmp_path: Path) -> None:
@@ -456,6 +652,10 @@ def test_cli_proves_zero_network_ig_stream_order_and_credentials(tmp_path: Path)
         "OFFLINE_REPLAY",
         "--package-root",
         str(package_root),
+        "--qualification-fixture",
+        str(QUALIFICATION_FIXTURE),
+        "--state-root",
+        str(tmp_path / "paper-state"),
         "--evidence-json",
         str(evidence_json),
         "--evidence-markdown",
@@ -489,8 +689,55 @@ def test_cli_proves_zero_network_ig_stream_order_and_credentials(tmp_path: Path)
         assert network[name] == 0
         assert f"{name}=0" in completed.stdout
     assert evidence["engineering_replay_classification"] == "PASS_REPLAY_INTEGRITY"
-    assert evidence["performance_evidence_classification"] == "NO_TRADES"
+    assert evidence["performance_evidence_classification"] == "NEGATIVE_ON_AVAILABLE_SAMPLE"
+    assert evidence["final_recommendation"] == "PASS_FOR_G3B_MERGE"
+    assert evidence["candidate_disposition_counts"]["RISK_REJECTION_ACCOUNT_STATE"] == 0
     assert trading_database.stat().st_mtime_ns == database_mtime
+
+
+def test_cli_stops_before_execution_on_qualification_account_state_gap(
+    tmp_path: Path,
+) -> None:
+    package_root = _package_root()
+    if not package_root.is_dir():
+        pytest.skip("external accepted G3A package is not mounted")
+    changed = tmp_path / "changed-g2-fixture.json"
+    changed.write_bytes(QUALIFICATION_FIXTURE.read_bytes() + b"\n")
+    evidence_json = tmp_path / "gap.json"
+    evidence_markdown = tmp_path / "gap.md"
+    state_root = tmp_path / "paper-state"
+    command = [
+        sys.executable,
+        "-m",
+        "src.ig_trader.g3b_replay",
+        "--mode",
+        "OFFLINE_REPLAY",
+        "--package-root",
+        str(package_root),
+        "--qualification-fixture",
+        str(changed),
+        "--state-root",
+        str(state_root),
+        "--evidence-json",
+        str(evidence_json),
+        "--evidence-markdown",
+        str(evidence_markdown),
+    ]
+
+    completed = subprocess.run(
+        command,
+        cwd=ROOT,
+        env={**os.environ, "PYTHONPATH": str(ROOT)},
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert completed.returncode == 8
+    assert "reason=QUALIFICATION_ACCOUNT_STATE_GAP" in completed.stderr
+    assert not state_root.exists()
+    assert not evidence_json.exists()
+    assert not evidence_markdown.exists()
 
 
 def _zero_network() -> dict[str, int]:

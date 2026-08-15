@@ -43,14 +43,22 @@ re-verifies the complete external G3A package, aligns only already-closed 1M,
 frozen Scalper and G2 risk/domain contracts, uses bid/offer execution semantics,
 and generates deterministic create-only evidence.
 
-The accepted sample contains 1,917 instrument-decisions, of which 1,624 are
-valid. The frozen Scalper produces 20 candidates. Ten selected candidates fail
-the spread/target-ratio limit, eight fail closed on unknown account state, and
-two same-cycle candidates are suppressed by the one-execution rule. No
-TradeIntent or paper trade is accepted, so performance evidence is `NO_TRADES`.
-Replay integrity is `PASS_REPLAY_INTEGRITY`, while final strategy disposition
-remains `HUMAN_REVIEW_REQUIRED`. The command and limitations are documented in
-`docs/G3B-01-EXACT-FROZEN-SCALPER-REPLAY.md`.
+G3B-01 established replay integrity but correctly failed eight selected GBPUSD
+candidates closed because the G3A market package has no account state. G3B-02
+reuses the accepted deterministic G2 account fixture and exact
+`AccountPort`/PaperBroker/PortfolioRisk path. The fixture and qualification
+account state are hash-pinned; an unavailable or changed source stops as
+`QUALIFICATION_ACCOUNT_STATE_GAP`.
+
+The sample remains 1,917 instrument-decisions, 1,624 valid decisions and 20
+candidates. Ten candidates fail the spread/target-ratio limit, two same-cycle
+candidates are suppressed, four are vetoed by authoritative open-position
+state, and four receive accepted local PaperBroker fills. All four close at
+their stop for approximately -16 spread-adjusted pips and -4R. This limited
+sample is `NEGATIVE_ON_AVAILABLE_SAMPLE`; strategy disposition remains
+`HUMAN_REVIEW_REQUIRED` and no Demo or Live execution is authorized. The exact
+account dependency, candidate audit and limitations are documented in
+`docs/G3B-02-ACCOUNT-STATE-COMPLETE-FROZEN-REPLAY.md`.
 
 ## G4A
 

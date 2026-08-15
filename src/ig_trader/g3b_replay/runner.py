@@ -6,6 +6,10 @@ import argparse
 import sys
 from pathlib import Path
 
+from src.ig_trader.g3b_replay.account_state import (
+    G2QualificationState,
+    QualificationAccountStateGap,
+)
 from src.ig_trader.g3b_replay.data import (
     ArtifactIntegrityError,
     verify_and_load_package,
@@ -19,6 +23,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Run exact frozen Scalper replay offline")
     parser.add_argument("--mode", required=True, choices=("OFFLINE_REPLAY",))
     parser.add_argument("--package-root", required=True, type=Path)
+    parser.add_argument("--qualification-fixture", required=True, type=Path)
+    parser.add_argument("--state-root", required=True, type=Path)
     parser.add_argument("--evidence-json", required=True, type=Path)
     parser.add_argument("--evidence-markdown", required=True, type=Path)
     return parser
@@ -33,18 +39,31 @@ def cli_main(
     args = build_parser().parse_args(argv)
     if args.evidence_json.exists() or args.evidence_markdown.exists():
         return _failure("EVIDENCE_OUTPUT_ALREADY_EXISTS", 2)
+    if args.state_root.exists():
+        return _failure("PAPER_STATE_OUTPUT_ALREADY_EXISTS", 2)
     try:
         dataset = verify_and_load_package(args.package_root)
+        qualification_state = G2QualificationState.load(args.qualification_fixture)
         commit_sha = git_head(repository_root)
+        first_broker = qualification_state.create_paper_broker(
+            args.state_root / "first" / "paper-broker.db"
+        )
         first = ExactReplayEngine(
             dataset,
             commit_sha=commit_sha,
             network_metrics=metrics.document(),
+            qualification_state=qualification_state,
+            paper_broker=first_broker,
         ).run()
+        second_broker = qualification_state.create_paper_broker(
+            args.state_root / "second" / "paper-broker.db"
+        )
         second = ExactReplayEngine(
             dataset,
             commit_sha=commit_sha,
             network_metrics=metrics.document(),
+            qualification_state=qualification_state,
+            paper_broker=second_broker,
         ).run()
         if canonical_bytes(first) != canonical_bytes(second):
             return _failure("NON_DETERMINISTIC", 5)
@@ -61,11 +80,14 @@ def cli_main(
             return _failure("EVIDENCE_WRITE_FAILED", 7)
     except ArtifactIntegrityError:
         return _failure("ARTIFACT_INTEGRITY_FAILURE", 3)
+    except QualificationAccountStateGap:
+        return _failure("QUALIFICATION_ACCOUNT_STATE_GAP", 8)
     except (OSError, TypeError, ValueError):
         return _failure("REPLAY_INTEGRITY_FAILURE", 4)
-    print("G3B_EXACT_REPLAY_COMPLETE")
+    print("G3B_ACCOUNT_STATE_REPLAY_COMPLETE")
     print(f"engineering_classification={first['engineering_replay_classification']}")
     print(f"performance_classification={first['performance_evidence_classification']}")
+    print(f"final_recommendation={first['final_recommendation']}")
     print(f"replay_run_fingerprint={first['replay_run_fingerprint']}")
     for name in (
         "network_call_count",

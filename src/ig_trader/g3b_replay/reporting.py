@@ -83,14 +83,40 @@ def markdown(document: dict[str, Any]) -> str:
         "\n".join(f"- `{key}`: `{value}`" for key, value in reasons.items()) or "- None"
     )
     limitations = "\n".join(f"- {value}" for value in document["limitations"])
+    account = document["account_and_risk_state"]
+    dispositions = document["candidate_disposition_counts"]
+    disposition_lines = "\n".join(f"- `{key}`: `{value}`" for key, value in dispositions.items())
+    candidate_rows = []
+    for item in document["candidate_audit"]:
+        candidate_rows.append(
+            f"| {item['decision_timestamp_utc']} | {item['symbol']} | {item['side']} | "
+            f"{item['confidence']:.4f} | {item['spread_pips']:.4f} | "
+            f"{_number(item['target_pips'])} | {_number(item['spread_target_ratio'])} | "
+            f"{item['account_state_result']} | {item['portfolio_risk_result']} | "
+            f"{item['final_disposition']} | {item['intent_id'] or '-'} |"
+        )
+    trade_rows = []
+    for item in document["trade_execution_audit"]:
+        trade_rows.append(
+            f"| {item['opened_at']} | {item['side']} | {item['size']:.2f} | "
+            f"{item['closed_at']} | {item['reason']} | {item['net_pips']:.4f} | "
+            f"{item['result_r']:.4f} | {item['profit_loss_account_currency']:.4f} |"
+        )
     instrument_header = (
         "| Instrument | Valid | Invalid | BUY | SELL | Candidates | Risk rejects | "
         "Spread rejects | Trades | Net pips |"
     )
-    return f"""# G3B-01 Exact Frozen Scalper Replay
+    candidate_header = (
+        "| Decision UTC | Instrument | Side | Confidence | Spread | Target | "
+        "Spread/target | Account result | PortfolioRisk result | Disposition | Intent ID |"
+    )
+    paper_profit = metrics["profit_loss_account_currency"]
+    account_currency = account["account"]["currency"]
+    return f"""# G3B-02 Account-State-Complete Frozen Replay
 
 - Engineering classification: `{document["engineering_replay_classification"]}`
 - Performance-evidence classification: `{document["performance_evidence_classification"]}`
+- Final recommendation: `{document["final_recommendation"]}`
 - Final strategy decision: `{document["final_strategy_decision"]}`
 - Git commit: `{document["git_commit_sha"]}`
 - Replay engine: `{document["replay_engine_version"]}`
@@ -98,6 +124,8 @@ def markdown(document: dict[str, Any]) -> str:
 - Frozen V1 configuration hash: `{document["frozen_v1"]["configuration_hash"]}`
 - External package fingerprint: `{document["artifact_verification"]["package_fingerprint"]}`
 - Dataset fingerprint: `{document["artifact_verification"]["dataset_fingerprint"]}`
+- G2 qualification fixture: `{account["fixture_sha256"]}`
+- Qualification account-state hash: `{account["qualification_account_state_hash"]}`
 
 ## Replay result
 
@@ -115,13 +143,27 @@ def markdown(document: dict[str, Any]) -> str:
 | Risk rejections | {metrics["risk_rejections"]} |
 | Spread rejections | {metrics["spread_rejections"]} |
 | Accepted TradeIntents | {metrics["accepted_trade_intents"]} |
-| Executed paper trades | {metrics["executed_paper_trades"]} |
+| Accepted PaperBroker fills | {metrics["paper_broker_fills"]} |
+| Closed paper trades | {metrics["closed_paper_trades"]} |
+| Open at dataset end | {metrics["open_at_dataset_end"]} |
 | Wins / losses / breakeven | {metrics["wins"]} / {metrics["losses"]} / {metrics["breakeven"]} |
 | Net spread-adjusted result (pips) | {metrics["net_spread_adjusted_result_pips"]:.4f} |
 | Result (R) | {metrics["result_r_multiples"]:.4f} |
 | Maximum drawdown (pips) | {metrics["maximum_drawdown_pips"]:.4f} |
 | Maximum consecutive losses | {metrics["maximum_consecutive_losses"]} |
 | Ambiguous intrabar events | {metrics["ambiguous_intrabar_events"]} |
+| Paper account P/L | {paper_profit:.4f} {account_currency} |
+
+## Qualification account dependency
+
+- Status: `{account["status"]}`
+- Accepted G2 commit: `{account["accepted_g2_commit_sha"]}`
+- AccountPort: `{account["account_port"]}`
+- PortfolioRisk: `{account["portfolio_risk"]}`
+- Initial balance: `{account["initial_snapshot"]["balance"]:.4f} {account["account"]["currency"]}`
+- Final balance: `{account["final_snapshot"]["balance"]:.4f} {account["account"]["currency"]}`
+- Account-state rejections: `{account["account_state_rejections"]}`
+- Suitability: {account["suitability"]}
 
 ## Per instrument
 
@@ -138,6 +180,22 @@ def markdown(document: dict[str, Any]) -> str:
 ## Rejections
 
 {rejection_lines}
+
+## Decision dispositions
+
+{disposition_lines}
+
+## Candidate audit (all 20 original candidates)
+
+{candidate_header}
+|---|---|---|---:|---:|---:|---:|---|---|---|---|
+{chr(10).join(candidate_rows)}
+
+## Closed paper-trade audit
+
+| Opened UTC | Side | Size | Closed UTC | Exit | Net pips | R | Account P/L |
+|---|---|---:|---|---|---:|---:|---:|
+{chr(10).join(trade_rows) if trade_rows else "| None | - | - | - | - | - | - | - |"}
 
 ## Authoritative gap
 
@@ -162,3 +220,7 @@ def markdown(document: dict[str, Any]) -> str:
 
 {limitations}
 """
+
+
+def _number(value: float | None) -> str:
+    return f"{value:.6f}" if value is not None else "-"
