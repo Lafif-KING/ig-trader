@@ -40,6 +40,7 @@ def assemble(directory: Path) -> dict[str, Any]:
         "g1": _junit(directory / "tests-g1.xml"),
         "g2": _junit(directory / "tests-g2.xml"),
         "g3a": _junit(directory / "tests-g3a.xml"),
+        "g3b": _junit(directory / "tests-g3b.xml"),
         "g4a": _junit(directory / "tests-g4a.xml"),
     }
     container = _json(directory / "container-smoke.json")
@@ -87,8 +88,9 @@ def _markdown(evidence: dict[str, Any]) -> str:
             f"- Run: `{evidence['run_id']}`",
             f"- Candidate: `{evidence['candidate_sha']}`",
             f"- Complete tests: `{tests['complete']['tests']}` passed",
-            f"- G1/G2/G3A/G4A: `{tests['g1']['tests']}` / `{tests['g2']['tests']}` / "
-            f"`{tests['g3a']['tests']}` / `{tests['g4a']['tests']}` passed",
+            f"- G1/G2/G3A/G3B/G4A: `{tests['g1']['tests']}` / `{tests['g2']['tests']}` / "
+            f"`{tests['g3a']['tests']}` / `{tests['g3b']['tests']}` / "
+            f"`{tests['g4a']['tests']}` passed",
             f"- Image digest: `{image['image_digest']}`",
             f"- Bicep: `{evidence['bicep']['status']}`",
             f"- Container: `{container['classification']}`",

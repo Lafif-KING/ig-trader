@@ -57,6 +57,12 @@ jobs:
             tests/test_g3a_market_data.py \
             tests/test_g3a_gap_recovery.py
 
+      - name: G3B focused tests
+        run: |
+          poetry run pytest -q \
+            --junitxml=artifacts/ci/tests-g3b.xml \
+            tests/test_g3b_replay.py
+
       - name: G4A focused tests
         run: |
           poetry run pytest -q \
