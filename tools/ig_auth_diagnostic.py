@@ -13,6 +13,7 @@ import importlib.metadata
 import json
 import os
 import re
+import ssl
 import subprocess
 import sys
 import threading
@@ -65,6 +66,8 @@ FINAL_CLASSIFICATIONS = {
     "NETWORK_FAILURE",
     "INCONCLUSIVE",
 }
+_LIGHTSTREAMER_TRUST_LOCK = threading.Lock()
+_lightstreamer_trust_configured = False
 
 
 class Classification(StrEnum):
@@ -734,6 +737,26 @@ LightstreamerFactory = Callable[[str, str | None], Any]
 SubscriptionFactory = Callable[[str, list[str], list[str]], Any]
 
 
+def create_system_trust_lightstreamer_client(
+    endpoint: str,
+    adapter_set: str | None,
+) -> Any:
+    """Create a Lightstreamer client using verified Windows system trust."""
+
+    global _lightstreamer_trust_configured
+    with _LIGHTSTREAMER_TRUST_LOCK:
+        if not _lightstreamer_trust_configured:
+            context = build_system_ssl_context()
+            if not context.check_hostname or context.verify_mode != ssl.CERT_REQUIRED:
+                raise DiagnosticError(
+                    Classification.CODE_DEFECT,
+                    "LIGHTSTREAMER_TLS_VERIFICATION_NOT_ENFORCED",
+                )
+            LightstreamerClient.setTrustManagerFactory(context)
+            _lightstreamer_trust_configured = True
+    return LightstreamerClient(endpoint, adapter_set)
+
+
 class StreamingProbe:
     """One-connection, one-price-subscription Lightstreamer probe."""
 
@@ -746,7 +769,7 @@ class StreamingProbe:
         xst: str,
         epic: str,
         status_history: list[dict[str, str]],
-        client_factory: LightstreamerFactory = LightstreamerClient,
+        client_factory: LightstreamerFactory = create_system_trust_lightstreamer_client,
         subscription_factory: SubscriptionFactory = Subscription,
         clock: Callable[[], datetime] = utc_now,
     ) -> None:
@@ -869,6 +892,12 @@ def _default_evidence(config: DiagnosticConfig) -> dict[str, Any]:
             "dealing_status": None,
         },
         "tokens": {"cst_present": False, "x_security_token_present": False},
+        "transport_security": {
+            "rest_tls_trust": "WINDOWS_SYSTEM_TRUST",
+            "lightstreamer_tls_trust": "WINDOWS_SYSTEM_TRUST",
+            "certificate_verification": "CERT_REQUIRED",
+            "hostname_verification": True,
+        },
         "lightstreamer": {
             "endpoint_hostname": None,
             "subscription_status": "NOT_ATTEMPTED",
@@ -888,6 +917,7 @@ def _default_evidence(config: DiagnosticConfig) -> dict[str, Any]:
             "lightstreamer_disconnect": "LIVE_FORCED_OR_AUTOMATED_TEST",
         },
         "bounded_reauthentication": {"limit": config.max_reauth_attempts, "count": 0},
+        "session_cleanup": "NOT_REQUIRED",
         "secret_scan_result": "NOT_RUN",
         "order_endpoint_call_count": 0,
         "blocked_endpoint_attempt_count": 0,
@@ -1077,6 +1107,7 @@ class DiagnosticRunner:
                 error_code=result.error_code,
             )
         self.tokens = None
+        self.evidence["session_cleanup"] = "LOGGED_OUT"
 
     def _probe_stream(self) -> StreamingProbe:
         if self.tokens is None:
@@ -1154,6 +1185,11 @@ class DiagnosticRunner:
             for probe in (first_probe, second_probe):
                 if probe is not None:
                     probe.client.disconnect()
+            if self.tokens is not None:
+                try:
+                    self._logout()
+                except DiagnosticError:
+                    self.evidence["session_cleanup"] = "FAILED_SANITIZED"
             self.rest.close()
             self.evidence["order_endpoint_call_count"] = self.rest.order_endpoint_call_count
             self.evidence["blocked_endpoint_attempt_count"] = (
@@ -1183,6 +1219,7 @@ def _secret_scan(document: Mapping[str, Any], secrets: tuple[str, ...]) -> str:
 def _markdown_report(document: Mapping[str, Any]) -> str:
     account = document["account"]
     tokens = document["tokens"]
+    transport = document["transport_security"]
     stream = document["lightstreamer"]
     lines = [
         "# G1-01 IG Demo read-only authentication diagnostic",
@@ -1201,9 +1238,13 @@ def _markdown_report(document: Mapping[str, Any]) -> str:
         f"- Demo account confirmed: `{account['demo_account_confirmed']}`",
         f"- CST present: `{tokens['cst_present']}`",
         f"- X-SECURITY-TOKEN present: `{tokens['x_security_token_present']}`",
+        f"- Lightstreamer TLS trust: `{transport['lightstreamer_tls_trust']}`",
+        f"- Certificate verification: `{transport['certificate_verification']}`",
+        f"- Hostname verification: `{transport['hostname_verification']}`",
         f"- Lightstreamer status: `{stream['subscription_status']}`",
         f"- First quote UTC: `{stream['first_quote_timestamp_utc']}`",
         f"- Forced reconnect: `{stream['forced_reconnect_result']}`",
+        f"- Session cleanup: `{document['session_cleanup']}`",
         f"- Secret scan: `{document['secret_scan_result']}`",
         f"- Order endpoint call count: `{document['order_endpoint_call_count']}`",
         f"- Final classification: `{document['final_classification']}`",
@@ -1309,6 +1350,12 @@ def _configuration_failure_document(
             "dealing_status": None,
         },
         "tokens": {"cst_present": False, "x_security_token_present": False},
+        "transport_security": {
+            "rest_tls_trust": "WINDOWS_SYSTEM_TRUST",
+            "lightstreamer_tls_trust": "WINDOWS_SYSTEM_TRUST",
+            "certificate_verification": "CERT_REQUIRED",
+            "hostname_verification": True,
+        },
         "lightstreamer": {
             "endpoint_hostname": None,
             "subscription_status": "NOT_ATTEMPTED",
@@ -1328,6 +1375,7 @@ def _configuration_failure_document(
             "lightstreamer_disconnect": "AUTOMATED_TEST",
         },
         "bounded_reauthentication": {"limit": 2, "count": 0},
+        "session_cleanup": "NOT_REQUIRED",
         "secret_scan_result": "NOT_RUN",
         "order_endpoint_call_count": 0,
         "blocked_endpoint_attempt_count": 0,

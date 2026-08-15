@@ -36,6 +36,12 @@ Lightstreamer endpoint is taken from the session response; the active account is
 the Lightstreamer user; and only `CST-...|XST-...` is accepted as the streaming
 password. OAuth bearer tokens are rejected.
 
+The Lightstreamer client uses the same verified Windows system trust policy as
+the shared REST client. This is required on the current workstation because the
+local TLS inspection root is trusted by Windows but rejected by Python's default
+CA verifier. Hostname verification remains enabled and certificate verification
+remains `CERT_REQUIRED`; the diagnostic never disables TLS verification.
+
 ## Configuration contract
 
 The diagnostic reads only these Demo settings from the process environment or

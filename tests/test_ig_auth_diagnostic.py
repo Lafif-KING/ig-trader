@@ -13,7 +13,9 @@ from typing import Any
 
 import httpx
 import pytest
+import truststore
 
+import tools.ig_auth_diagnostic as diagnostic_module
 from tools.ig_auth_diagnostic import (
     ACCOUNT_ENV_NAMES,
     DEMO_REST_BASE_URL,
@@ -27,6 +29,7 @@ from tools.ig_auth_diagnostic import (
     StreamingProbe,
     _configuration_failure_document,
     build_stream_password,
+    create_system_trust_lightstreamer_client,
     endpoint_is_allowed,
     load_config,
     write_reports,
@@ -486,6 +489,7 @@ def test_preferred_account_failures_block_streaming(
             login_response(),
             response(200, {"accountId": ACCOUNT}),
             account_result,
+            response(204),
         ],
     )
 
@@ -494,6 +498,7 @@ def test_preferred_account_failures_block_streaming(
     assert evidence["final_classification"] == classification.value
     assert evidence["remaining_blocker"] == reason
     assert evidence["lightstreamer"]["subscription_status"] == "NOT_ATTEMPTED"
+    assert evidence["session_cleanup"] == "LOGGED_OUT"
 
 
 def test_oauth_token_is_rejected_for_lightstreamer() -> None:
@@ -516,6 +521,39 @@ def test_streaming_connection_timeout_is_explicit() -> None:
 
     with pytest.raises(DiagnosticError, match="LIGHTSTREAMER_CONNECTION_TIMEOUT"):
         probe.connect_and_wait(connect_timeout=0.001, quote_timeout=0.001)
+
+
+def test_lightstreamer_factory_installs_verified_system_trust_once(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class FakeClient:
+        contexts: list[Any] = []
+        instances: list[tuple[str, str | None]] = []
+
+        @staticmethod
+        def setTrustManagerFactory(context: Any) -> None:  # noqa: N802
+            FakeClient.contexts.append(context)
+
+        def __init__(self, endpoint: str, adapter_set: str | None) -> None:
+            self.__class__.instances.append((endpoint, adapter_set))
+
+    monkeypatch.setattr(diagnostic_module, "LightstreamerClient", FakeClient)
+    monkeypatch.setattr(diagnostic_module, "_lightstreamer_trust_configured", False)
+
+    first = create_system_trust_lightstreamer_client("https://stream.example.test", None)
+    second = create_system_trust_lightstreamer_client("https://stream.example.test", None)
+
+    assert isinstance(first, FakeClient)
+    assert isinstance(second, FakeClient)
+    assert len(FakeClient.contexts) == 1
+    context = FakeClient.contexts[0]
+    assert isinstance(context, truststore.SSLContext)
+    assert context.check_hostname is True
+    assert context.verify_mode.name == "CERT_REQUIRED"
+    assert FakeClient.instances == [
+        ("https://stream.example.test", None),
+        ("https://stream.example.test", None),
+    ]
 
 
 def test_stale_price_stream_is_rejected() -> None:
@@ -570,6 +608,7 @@ def test_rest_401_reauthentication_is_bounded(tmp_path: Path) -> None:
             response(401, {"errorCode": "error.security.client-token-invalid"}),
             login_response(),
             response(401, {"errorCode": "error.security.client-token-invalid"}),
+            response(204),
         ],
         diagnostic_config=selected_config,
     )
@@ -586,7 +625,8 @@ def test_rest_401_reauthentication_is_bounded(tmp_path: Path) -> None:
         )
         == 2
     )
-    assert len(client.calls) == 4
+    assert len(client.calls) == 5
+    assert evidence["session_cleanup"] == "LOGGED_OUT"
 
 
 def test_invalid_token_reauthenticates_and_restores_full_probe(tmp_path: Path) -> None:
