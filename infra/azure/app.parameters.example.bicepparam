@@ -1,6 +1,6 @@
 using './app.bicep'
 
-param prefix = 'replaceprefix'
+param prefix = 'replacepfx'
 param containerImage = 'registry-name.azurecr.io/ig-trader@sha256:0000000000000000000000000000000000000000000000000000000000000000'
 param imageCommitSha = '0000000000000000000000000000000000000000'
 param containerRegistryName = 'replace-with-foundation-output'
