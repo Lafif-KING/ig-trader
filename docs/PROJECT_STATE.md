@@ -28,6 +28,30 @@ The command and full safety boundary are documented in
 composition from resolving credentials or constructing IG REST/Lightstreamer
 clients. Unknown or mismatched state fails closed.
 
+## G3A
+
+G3A accepted the immutable IG Demo historical package for the frozen
+EURGBP/EURUSD/GBPUSD research universe and classified the EURGBP 1M
+`2026-08-14T19:03:00Z` omission as an authoritative gap. G3A grants no order
+authority and does not change the active bot's EURGBP-only execution scope.
+
+## G3B
+
+G3B adds a separate broker-isolated exact historical replay composition. It
+re-verifies the complete external G3A package, aligns only already-closed 1M,
+5M, 15M, and 1H candles, enforces `GAP_AWARE_REPLAY_V1`, calls the existing
+frozen Scalper and G2 risk/domain contracts, uses bid/offer execution semantics,
+and generates deterministic create-only evidence.
+
+The accepted sample contains 1,917 instrument-decisions, of which 1,624 are
+valid. The frozen Scalper produces 20 candidates. Ten selected candidates fail
+the spread/target-ratio limit, eight fail closed on unknown account state, and
+two same-cycle candidates are suppressed by the one-execution rule. No
+TradeIntent or paper trade is accepted, so performance evidence is `NO_TRADES`.
+Replay integrity is `PASS_REPLAY_INTEGRITY`, while final strategy disposition
+remains `HUMAN_REVIEW_REQUIRED`. The command and limitations are documented in
+`docs/G3B-01-EXACT-FROZEN-SCALPER-REPLAY.md`.
+
 ## G4A
 
 G4A adds a separate container/cloud entry point that accepts only
