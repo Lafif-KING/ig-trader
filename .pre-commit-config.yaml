@@ -1,15 +1,19 @@
-﻿repos:
-  - repo: https://github.com/astral-sh/ruff-pre-commit
-    rev: v0.6.9
+repos:
+  - repo: local
     hooks:
-      - id: ruff
-        args: [--fix]
+      - id: ruff-check
+        name: Ruff lint
+        entry: ruff check --force-exclude
+        language: system
+        types: [python]
       - id: ruff-format
-  - repo: https://github.com/pycqa/isort
-    rev: 5.13.2
-    hooks:
-      - id: isort
-        args: ["--profile", "black"]
-
-
-
+        name: Ruff format
+        entry: ruff format --check --force-exclude
+        language: system
+        types: [python]
+      - id: tracked-secret-patterns
+        name: Tracked secret patterns
+        entry: python tools/scan_tracked_secrets.py
+        language: system
+        pass_filenames: false
+        always_run: true

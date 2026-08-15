@@ -1,19 +1,27 @@
 """Structured logging configuration using structlog."""
 
 import logging
+import sys
 
 import structlog
 
-from src.ig_trader.config import settings
 
-
-def configure_logging() -> None:
+def configure_logging(log_level: str | None = None) -> None:
     """Configure structlog and standard logging."""
+
+    if log_level is None:
+        # Keep the existing public behavior for the legacy bot while allowing the
+        # isolated cloud launcher to configure logging without resolving .env.
+        from src.ig_trader.config import settings
+
+        log_level = settings.log_level
 
     # Configure standard logging
     logging.basicConfig(
         format="%(message)s",
-        level=settings.log_level.upper(),
+        level=log_level.upper(),
+        stream=sys.stdout,
+        force=True,
     )
 
     # Configure structlog

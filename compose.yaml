@@ -1,0 +1,18 @@
+services:
+  cloud-runtime:
+    build:
+      context: .
+      args:
+        APP_COMMIT_SHA: ${APP_COMMIT_SHA:-unknown}
+        APP_VERSION: "0.1.0"
+    environment:
+      EXECUTION_MODE: NO_EXECUTION
+    init: true
+    ports:
+      - "127.0.0.1:8080:8080"
+    read_only: true
+    security_opt:
+      - no-new-privileges:true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=16m
+    restart: "no"
