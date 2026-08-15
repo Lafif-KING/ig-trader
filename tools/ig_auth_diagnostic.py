@@ -833,7 +833,7 @@ class StreamingProbe:
         self.client.addListener(self.connection_listener)
         self.subscription = subscription_factory(
             "MERGE",
-            [f"L1:{epic}"],
+            [f"MARKET:{epic}"],
             ["UPDATE_TIME", "BID", "OFFER"],
         )
         self.subscription.addListener(self.quote_listener)

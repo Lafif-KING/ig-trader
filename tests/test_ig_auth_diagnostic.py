@@ -663,6 +663,8 @@ def test_forced_disconnect_is_observed_and_subscription_receives_quote() -> None
     probe.connect_and_wait(connect_timeout=0.01, quote_timeout=0.01)
     probe.disconnect_and_wait(0.01)
 
+    assert probe.subscription.items == ["MARKET:CS.D.EURGBP.MINI.IP"]
+    assert probe.subscription.fields == ["UPDATE_TIME", "BID", "OFFER"]
     assert probe.quote_listener.bid_present is True
     assert probe.quote_listener.offer_present is True
     assert [item["status"] for item in history] == [

@@ -34,7 +34,8 @@ formats documented in the [IG REST guide](https://labs.ig.com/rest-trading-api-g
 [streaming guide](https://labs.ig.com/streaming-api-guide.html). The dynamic
 Lightstreamer endpoint is taken from the session response; the active account is
 the Lightstreamer user; and only `CST-...|XST-...` is accepted as the streaming
-password. OAuth bearer tokens are rejected.
+password. Price items use IG's documented `MARKET:{epic}` form. OAuth bearer
+tokens are rejected.
 
 The Lightstreamer client uses the same verified Windows system trust policy as
 the shared REST client. This is required on the current workstation because the
