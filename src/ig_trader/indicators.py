@@ -25,6 +25,21 @@ def add_atr(df: pd.DataFrame, length: int = 14) -> pd.DataFrame:
     return df
 
 
+def add_adx(df: pd.DataFrame, length: int = 14) -> pd.DataFrame:
+    """Add ADX and directional components used by the frozen Scalper."""
+
+    adx = ta.trend.ADXIndicator(
+        high=df["high"],
+        low=df["low"],
+        close=df["close"],
+        window=length,
+    )
+    df["adx"] = adx.adx()
+    df["adx_pos"] = adx.adx_pos()
+    df["adx_neg"] = adx.adx_neg()
+    return df
+
+
 def add_bbands(df: pd.DataFrame, length: int = 20, std: int = 2) -> pd.DataFrame:
     bb = ta.volatility.BollingerBands(close=df["close"], window=length, window_dev=std)
     df["bb_lower"] = bb.bollinger_lband()

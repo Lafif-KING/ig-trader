@@ -1,0 +1,122 @@
+{
+  "schema_version": "1.0",
+  "source_type": "SYNTHETIC_DETERMINISTIC_OFFLINE_PAPER",
+  "execution_mode": "OFFLINE_PAPER",
+  "cycle_id": "g2-offline-paper-e2e-001",
+  "evaluation_time": "2026-08-15T12:00:00Z",
+  "account": {
+    "account_id": "G2-OFFLINE-PAPER",
+    "currency": "EUR",
+    "starting_balance": 10000.0
+  },
+  "instruments": [
+    {
+      "symbol": "EURGBP",
+      "epic": "CS.D.EURGBP.MINI.IP",
+      "base_currency": "EUR",
+      "quote_currency": "GBP",
+      "pip_size": 0.0001,
+      "pip_value_account_currency": 1.0,
+      "minimum_size": 0.1,
+      "minimum_stop_pips": 2.0,
+      "candle_generation": {
+        "start_time": "2026-08-15T11:00:00Z",
+        "count": 60,
+        "start_close": 0.86,
+        "step": -0.00002,
+        "oscillation": 0.0,
+        "range_pips": 2.0,
+        "spread_pips": 0.4
+      },
+      "quote": {
+        "timestamp": "2026-08-15T12:00:00Z",
+        "bid": 0.85882,
+        "offer": 0.85886
+      },
+      "exit_candle": {
+        "timestamp": "2026-08-15T12:01:00Z",
+        "bid_open": 0.85882,
+        "bid_high": 0.85960,
+        "bid_low": 0.85870,
+        "bid_close": 0.85940,
+        "offer_open": 0.85886,
+        "offer_high": 0.85964,
+        "offer_low": 0.85874,
+        "offer_close": 0.85944,
+        "volume": 100.0
+      }
+    },
+    {
+      "symbol": "EURUSD",
+      "epic": "CS.D.EURUSD.MINI.IP",
+      "base_currency": "EUR",
+      "quote_currency": "USD",
+      "pip_size": 0.0001,
+      "pip_value_account_currency": 1.0,
+      "minimum_size": 0.1,
+      "minimum_stop_pips": 2.0,
+      "candle_generation": {
+        "start_time": "2026-08-15T11:00:00Z",
+        "count": 60,
+        "start_close": 1.1,
+        "step": 0.0,
+        "oscillation": 0.00002,
+        "range_pips": 2.0,
+        "spread_pips": 0.4
+      },
+      "quote": {
+        "timestamp": "2026-08-15T12:00:00Z",
+        "bid": 1.09998,
+        "offer": 1.10002
+      },
+      "exit_candle": {
+        "timestamp": "2026-08-15T12:01:00Z",
+        "bid_open": 1.09998,
+        "bid_high": 1.10010,
+        "bid_low": 1.09990,
+        "bid_close": 1.10000,
+        "offer_open": 1.10002,
+        "offer_high": 1.10014,
+        "offer_low": 1.09994,
+        "offer_close": 1.10004,
+        "volume": 100.0
+      }
+    },
+    {
+      "symbol": "GBPUSD",
+      "epic": "CS.D.GBPUSD.MINI.IP",
+      "base_currency": "GBP",
+      "quote_currency": "USD",
+      "pip_size": 0.0001,
+      "pip_value_account_currency": 1.0,
+      "minimum_size": 0.1,
+      "minimum_stop_pips": 2.0,
+      "candle_generation": {
+        "start_time": "2026-08-15T11:00:00Z",
+        "count": 60,
+        "start_close": 1.28,
+        "step": 0.0,
+        "oscillation": 0.0,
+        "range_pips": 2.0,
+        "spread_pips": 0.4
+      },
+      "quote": {
+        "timestamp": "2026-08-15T12:00:00Z",
+        "bid": 1.28,
+        "offer": 1.28004
+      },
+      "exit_candle": {
+        "timestamp": "2026-08-15T12:01:00Z",
+        "bid_open": 1.28,
+        "bid_high": 1.28010,
+        "bid_low": 1.27990,
+        "bid_close": 1.28,
+        "offer_open": 1.28004,
+        "offer_high": 1.28014,
+        "offer_low": 1.27994,
+        "offer_close": 1.28004,
+        "volume": 100.0
+      }
+    }
+  ]
+}

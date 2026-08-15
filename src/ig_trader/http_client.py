@@ -1,11 +1,22 @@
 """HTTP client with retry logic and structured logging."""
 
+import ssl
 from typing import Any
 
 import httpx
 import structlog
+import truststore
 
 logger = structlog.get_logger(__name__)
+
+
+def build_system_ssl_context() -> ssl.SSLContext:
+    """Return a hostname-checking TLS client context backed by system trust."""
+
+    context = truststore.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+    context.check_hostname = True
+    context.verify_mode = ssl.CERT_REQUIRED
+    return context
 
 
 class HTTPClient:

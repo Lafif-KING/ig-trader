@@ -6,3 +6,7 @@ __pycache__/
 *.pyc
 tests/__pycache__/
 test_connection.py
+.pytest_cache/
+.runtime/
+**/__pycache__/
+*.py[cod]

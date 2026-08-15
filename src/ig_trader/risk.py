@@ -60,8 +60,9 @@ class RiskEngine:
     def validate_signal(
         self,
         signal: Signal,
-        open_positions_for_strategy: int = 0,
-        daily_loss_pct: float = 0.0,
+        *,
+        open_positions_for_strategy: int,
+        daily_loss_pct: float,
     ) -> bool:
         """
         Checks if a signal is safe to trade.
