@@ -1200,10 +1200,12 @@ def run_ownership_remediation(
         connection_tls = _connection_uses_tls(connection)
         _require_complete_reviewed_schema(connection)
         before = inspect_ownership(connection)
+        allowed_memberships = {
+            ("azure_pg_admin", BOOTSTRAP_PRINCIPAL_NAME),
+            (RUNTIME_PRINCIPAL_NAME, BOOTSTRAP_PRINCIPAL_NAME),
+        }
         unexpected_memberships = tuple(
-            item
-            for item in before.orphan_memberships
-            if item != ("azure_pg_admin", BOOTSTRAP_PRINCIPAL_NAME)
+            item for item in before.orphan_memberships if item not in allowed_memberships
         )
         if before.orphan_default_acl_count or unexpected_memberships:
             raise OwnershipTransferFailure(
@@ -1212,6 +1214,10 @@ def run_ownership_remediation(
         connection.execute(
             f'REASSIGN OWNED BY "{BOOTSTRAP_PRINCIPAL_NAME}" TO {DURABLE_OWNER_NAME}'
         )
+        if (RUNTIME_PRINCIPAL_NAME, BOOTSTRAP_PRINCIPAL_NAME) in before.orphan_memberships:
+            connection.execute(
+                f'REVOKE "{RUNTIME_PRINCIPAL_NAME}" FROM "{BOOTSTRAP_PRINCIPAL_NAME}"'
+            )
         connection.execute(
             f'REVOKE ALL PRIVILEGES ON DATABASE {DATABASE_NAME} FROM "{BOOTSTRAP_PRINCIPAL_NAME}"'
         )
@@ -1261,6 +1267,9 @@ def run_ownership_remediation(
             "schemas": sum(owner == BOOTSTRAP_PRINCIPAL_NAME for _, owner in before.schema_owners),
         },
         "orphan_dependency_count_after": after.orphan_dependency_count,
+        "runtime_role_membership_removed": (
+            (RUNTIME_PRINCIPAL_NAME, BOOTSTRAP_PRINCIPAL_NAME) in before.orphan_memberships
+        ),
         "ownership_after": _ownership_evidence(after),
         "runtime_non_admin": True,
         "runtime_non_owner": True,

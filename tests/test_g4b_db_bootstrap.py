@@ -451,6 +451,7 @@ def test_cloud_bootstrap_source_has_no_sqlite_fallback_or_broker_import() -> Non
     assert '"ownership-inspect"' in source
     assert '"ownership-remediate"' in source
     assert "REASSIGN OWNED BY" in source
+    assert 'REVOKE "{RUNTIME_PRINCIPAL_NAME}"' in source
     assert "DROP OWNED" not in source
     assert '"event": "db_schema_inspection"' in source
     assert '"execution_nonce"' in source
