@@ -366,6 +366,8 @@ def test_oidc_publisher_supports_both_reviewed_immutable_images() -> None:
     assert "Dockerfile.db-bootstrap" in workflow
     assert "tools/g4b_db_bootstrap_image_inspect.py" in workflow
     assert "IMAGE_TAG=$GITHUB_SHA" in workflow
+    assert "inputs.image_kind == 'db_bootstrap'" in workflow
+    assert "tests-g4b-db-bootstrap.xml" in workflow
     assert "latest" not in workflow.casefold()
 
 

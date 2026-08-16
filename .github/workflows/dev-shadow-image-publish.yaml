@@ -72,6 +72,7 @@ jobs:
           poetry run pip check
 
       - name: Complete and focused safety tests
+        if: inputs.mode != 'publish' || inputs.image_kind == 'normal'
         run: |
           poetry run pytest -q \
             --junitxml=artifacts/image-publish/tests-complete.xml
@@ -92,6 +93,14 @@ jobs:
             --junitxml=artifacts/image-publish/tests-g4a-g4b.xml \
             tests/test_cloud_runtime.py \
             tests/test_cloud_foundation_contracts.py
+
+      - name: Focused database-image safety tests
+        if: inputs.mode == 'publish' && inputs.image_kind == 'db_bootstrap'
+        run: |
+          poetry run pytest -q \
+            --junitxml=artifacts/image-publish/tests-g4b-db-bootstrap.xml \
+            tests/test_g4b_db_bootstrap.py \
+            tests/test_execution_lease.py
 
       - name: Quality and tracked-secret gates
         env:
