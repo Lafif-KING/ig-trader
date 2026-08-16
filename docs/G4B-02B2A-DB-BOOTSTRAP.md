@@ -134,11 +134,12 @@ the bootstrap Job, and the runtime-probe Job. The Container Apps environment,
 ACR, PostgreSQL server, and runtime UAMI are existing/reference-only. A
 read-only What-If must show no unrelated modification or deletion.
 
-At the configured ceilings, two ten-minute runs consume at most 600 vCPU-seconds
-and 1,200 GiB-seconds of Container Apps job compute in total. The incremental
-charge should be negligible or small, depending on the then-current regional
-meter and free grant; this is planning guidance, not a guaranteed Azure charge.
-The existing EUR 60 monthly DEV budget is unchanged.
+At the configured ceilings, one ten-minute bootstrap and one five-minute probe
+consume at most 450 vCPU-seconds and 900 GiB-seconds of Container Apps job
+compute in total. The incremental charge should be negligible or small,
+depending on the then-current regional meter and free grant; this is planning
+guidance, not a guaranteed Azure charge. The existing EUR 60 monthly DEV budget
+is unchanged.
 
 Throughout this foundation: Azure creates/modifies/deletes are zero, the
 running revision is unchanged and `NO_EXECUTION`, IG credentials and connections
