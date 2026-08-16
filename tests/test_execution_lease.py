@@ -368,7 +368,14 @@ def test_migration_extends_the_existing_worker_lease_and_fences_state_tables() -
 def _postgres_connection(dsn: str) -> Any:
     import psycopg
 
-    return psycopg.connect(psycopg.conninfo.make_conninfo(dsn, user=POSTGRES_TEST_ROLE))
+    return psycopg.connect(
+        psycopg.conninfo.make_conninfo(
+            dsn,
+            user=POSTGRES_TEST_ROLE,
+            connect_timeout=5,
+            options="-c statement_timeout=5000 -c lock_timeout=3000",
+        )
+    )
 
 
 def _prepare_postgres(dsn: str) -> None:
@@ -421,20 +428,51 @@ def _lease_process(
     ttl_seconds: float,
     start: Any,
     hold: Any,
-    results: Any,
+    result: Any,
 ) -> None:
-    store = PostgresExecutionLeaseStore(lambda: _postgres_connection(dsn))
-    start.wait(15)
-    lease = store.acquire(EXECUTION_LEASE_NAME, instance_id, ttl_seconds)
-    results.put(
-        {
-            "instance": instance_id,
-            "role": "LEADER" if lease else "STANDBY",
-            "token": lease.fencing_token if lease else None,
-        }
+    try:
+        store = PostgresExecutionLeaseStore(lambda: _postgres_connection(dsn))
+        start.wait(15)
+        lease = store.acquire(EXECUTION_LEASE_NAME, instance_id, ttl_seconds)
+        result.send(
+            {
+                "instance": instance_id,
+                "role": "LEADER" if lease else "STANDBY",
+                "token": lease.fencing_token if lease else None,
+            }
+        )
+        if lease is not None:
+            hold.wait(30)
+    finally:
+        result.close()
+
+
+def _start_lease_process(
+    context: Any,
+    *,
+    dsn: str,
+    instance_id: str,
+    ttl_seconds: float,
+    start: Any,
+    hold: Any,
+) -> tuple[Any, Any]:
+    receiver, sender = context.Pipe(duplex=False)
+    process = context.Process(
+        target=_lease_process,
+        args=(dsn, instance_id, ttl_seconds, start, hold, sender),
     )
-    if lease is not None:
-        hold.wait(30)
+    process.start()
+    sender.close()
+    return process, receiver
+
+
+def _stop_process(process: Any) -> None:
+    if process.is_alive():
+        process.terminate()
+        process.join(timeout=5)
+    if process.is_alive():
+        process.kill()
+        process.join(timeout=5)
 
 
 def _required_postgres_dsn() -> str:
@@ -450,57 +488,73 @@ def test_two_processes_elect_one_leader_then_handoff_after_leader_crash() -> Non
     context = multiprocessing.get_context("spawn")
     start = context.Event()
     hold = context.Event()
-    results = context.Queue()
-    processes = {
-        instance: context.Process(
-            target=_lease_process,
-            args=(dsn, instance, 2.0, start, hold, results),
+    processes: dict[str, Any] = {}
+    receivers: dict[str, Any] = {}
+    successor: Any = None
+    successor_receiver: Any = None
+    successor_hold: Any = None
+    try:
+        for instance in ("process-a", "process-b"):
+            process, receiver = _start_lease_process(
+                context,
+                dsn=dsn,
+                instance_id=instance,
+                ttl_seconds=2.0,
+                start=start,
+                hold=hold,
+            )
+            processes[instance] = process
+            receivers[instance] = receiver
+
+        start.set()
+        assert all(receiver.poll(20) for receiver in receivers.values())
+        initial = [receiver.recv() for receiver in receivers.values()]
+
+        assert sorted(item["role"] for item in initial) == ["LEADER", "STANDBY"]
+        leader_result = next(item for item in initial if item["role"] == "LEADER")
+        follower_result = next(item for item in initial if item["role"] == "STANDBY")
+        leader_process = processes[leader_result["instance"]]
+        leader_process.terminate()
+        leader_process.join(timeout=10)
+        assert not leader_process.is_alive()
+        hold.set()
+        follower_process = processes[follower_result["instance"]]
+        follower_process.join(timeout=10)
+        assert follower_process.exitcode == 0
+
+        time.sleep(2.2)
+        successor_start = context.Event()
+        successor_hold = context.Event()
+        successor, successor_receiver = _start_lease_process(
+            context,
+            dsn=dsn,
+            instance_id=follower_result["instance"],
+            ttl_seconds=2.0,
+            start=successor_start,
+            hold=successor_hold,
         )
-        for instance in ("process-a", "process-b")
-    }
-    for process in processes.values():
-        process.start()
-    start.set()
-    initial = [results.get(timeout=20), results.get(timeout=20)]
+        successor_start.set()
+        assert successor_receiver.poll(20)
+        handoff = successor_receiver.recv()
+        successor_hold.set()
+        successor.join(timeout=10)
 
-    assert sorted(item["role"] for item in initial) == ["LEADER", "STANDBY"]
-    leader_result = next(item for item in initial if item["role"] == "LEADER")
-    follower_result = next(item for item in initial if item["role"] == "STANDBY")
-    leader_process = processes[leader_result["instance"]]
-    leader_process.terminate()
-    leader_process.join(timeout=10)
-    assert not leader_process.is_alive()
-    hold.set()
-    for instance, process in processes.items():
-        if instance != leader_result["instance"]:
-            process.join(timeout=10)
-            assert process.exitcode == 0
-
-    time.sleep(2.2)
-    successor_start = context.Event()
-    successor_hold = context.Event()
-    successor_results = context.Queue()
-    successor = context.Process(
-        target=_lease_process,
-        args=(
-            dsn,
-            follower_result["instance"],
-            2.0,
-            successor_start,
-            successor_hold,
-            successor_results,
-        ),
-    )
-    successor.start()
-    successor_start.set()
-    handoff = successor_results.get(timeout=20)
-    successor_hold.set()
-    successor.join(timeout=10)
-
-    assert successor.exitcode == 0
-    assert handoff["role"] == "LEADER"
-    assert handoff["instance"] == follower_result["instance"]
-    assert handoff["token"] > leader_result["token"]
+        assert successor.exitcode == 0
+        assert handoff["role"] == "LEADER"
+        assert handoff["instance"] == follower_result["instance"]
+        assert handoff["token"] > leader_result["token"]
+    finally:
+        hold.set()
+        if successor_hold is not None:
+            successor_hold.set()
+        for process in processes.values():
+            _stop_process(process)
+        if successor is not None:
+            _stop_process(successor)
+        for receiver in receivers.values():
+            receiver.close()
+        if successor_receiver is not None:
+            successor_receiver.close()
 
 
 def test_postgresql_rejects_unfenced_and_stale_state_changes() -> None:
