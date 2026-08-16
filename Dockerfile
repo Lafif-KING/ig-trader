@@ -15,6 +15,7 @@ COPY pyproject.toml poetry.lock README.md ./
 RUN poetry sync --only main --no-root --no-ansi
 
 COPY src ./src
+RUN rm ./src/ig_trader/db_bootstrap.py
 RUN poetry install --only-root --no-ansi
 
 FROM ${PYTHON_IMAGE} AS runtime

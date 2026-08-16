@@ -277,6 +277,7 @@ def test_cloud_bootstrap_source_has_no_sqlite_fallback_or_broker_import() -> Non
 
 def test_bootstrap_image_contains_only_required_project_inputs() -> None:
     dockerfile = (ROOT / "Dockerfile.db-bootstrap").read_text(encoding="utf-8")
+    runtime_dockerfile = (ROOT / "Dockerfile").read_text(encoding="utf-8")
 
     assert "python:3.13.14-slim-bookworm@sha256:" in dockerfile
     assert "USER 10001:10001" in dockerfile
@@ -285,6 +286,10 @@ def test_bootstrap_image_contains_only_required_project_inputs() -> None:
     assert "002_execution_lease_fencing.sql" in dockerfile
     assert "COPY src ./src" not in dockerfile
     assert ".env" not in dockerfile
+    assert "RUN rm ./src/ig_trader/db_bootstrap.py" in runtime_dockerfile
+    assert "normal runtime contains database administration code" in (
+        ROOT / "tools/g4a_image_inspect.py"
+    ).read_text(encoding="utf-8")
 
 
 def test_job_iac_owns_only_the_temporary_bootstrap_stage() -> None:

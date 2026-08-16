@@ -121,6 +121,8 @@ def inspect_image(
 
     paths = _application_paths(image)
     parts = [PurePosixPath(path).parts for path in paths]
+    if any(PurePosixPath(path).name == "db_bootstrap.py" for path in paths):
+        raise ImageInspectionError("normal runtime contains database administration code")
     if any(".git" in value or ".env" in value for value in parts):
         raise ImageInspectionError("image contains source-control or environment metadata")
     forbidden_project_suffixes = {".csv", ".db", ".feather", ".parquet", ".sqlite"}
