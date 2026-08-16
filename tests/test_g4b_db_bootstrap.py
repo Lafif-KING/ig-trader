@@ -24,8 +24,10 @@ from src.ig_trader.db_bootstrap import (
     PrincipalRecord,
     PrivilegeMismatch,
     PrivilegeSnapshot,
+    SchemaClassification,
     SchemaSnapshot,
     apply_required_migrations,
+    classify_schema,
     inspect_schema,
     load_migration_sources,
     plan_migrations,
@@ -55,7 +57,7 @@ def _ledger(*versions: str) -> dict[str, str]:
 
 
 def _environment(mode: str) -> dict[str, str]:
-    bootstrap = mode == "bootstrap-admin"
+    bootstrap = mode in {"bootstrap-admin", "schema-inspect"}
     values = {
         "AZURE_CLIENT_ID": CLIENT_ID,
         "JOB_IDENTITY_NAME": (BOOTSTRAP_PRINCIPAL_NAME if bootstrap else RUNTIME_PRINCIPAL_NAME),
@@ -73,6 +75,7 @@ def test_blank_database_plans_001_then_002() -> None:
 
     assert plan_migrations(snapshot) == (MIGRATION_001, MIGRATION_002)
     assert snapshot.state(MIGRATION_001) is MigrationState.ABSENT
+    assert classify_schema(snapshot) is SchemaClassification.BLANK
 
 
 def test_001_present_and_002_absent_plans_only_002() -> None:
@@ -82,6 +85,7 @@ def test_001_present_and_002_absent_plans_only_002() -> None:
     )
 
     assert plan_migrations(snapshot) == (MIGRATION_002,)
+    assert classify_schema(snapshot) is SchemaClassification.MIGRATION_001_COMPLETE_ONLY
 
 
 def test_both_migrations_present_are_verified_without_reapplication() -> None:
@@ -91,6 +95,7 @@ def test_both_migrations_present_are_verified_without_reapplication() -> None:
     )
 
     assert plan_migrations(snapshot) == ()
+    assert classify_schema(snapshot) is SchemaClassification.MIGRATIONS_001_AND_002_COMPLETE
 
 
 def test_partial_001_fails_closed() -> None:
@@ -111,6 +116,16 @@ def test_partial_002_fails_closed() -> None:
 
     with pytest.raises(DatabaseSchemaDrift):
         plan_migrations(snapshot)
+
+
+def test_unknown_constraint_footprint_fails_closed() -> None:
+    snapshot = SchemaSnapshot(
+        markers=_markers(MIGRATION_001) | {"constraint-count:trade_intents:c:7"},
+        ledger=_ledger(MIGRATION_001.version),
+    )
+
+    with pytest.raises(DatabaseSchemaDrift):
+        classify_schema(snapshot)
 
 
 def test_complete_schema_without_reviewed_ledger_hash_fails_closed() -> None:
@@ -223,6 +238,14 @@ def test_bootstrap_identity_is_required_and_distinct() -> None:
     assert config.job_identity_object_id != config.runtime_identity_object_id
 
 
+def test_schema_inspection_uses_bootstrap_identity_without_runtime_authority() -> None:
+    config = JobConfig.from_environment("schema-inspect", _environment("schema-inspect"))
+
+    assert config.database_user == BOOTSTRAP_PRINCIPAL_NAME
+    assert config.job_identity_object_id == BOOTSTRAP_OBJECT_ID
+    assert config.runtime_identity_object_id is None
+
+
 def test_runtime_identity_cannot_run_bootstrap_admin() -> None:
     environment = _environment("runtime-probe")
     environment["RUNTIME_UAMI_OBJECT_ID"] = RUNTIME_OBJECT_ID
@@ -307,6 +330,10 @@ def test_job_iac_owns_only_the_temporary_bootstrap_stage() -> None:
     assert "secrets: []" in bicep
     assert "RUNTIME_UAMI_OBJECT_ID" in bicep
     assert "runtimeIdentity.properties.principalId" in bicep
+    assert "'schema-inspect'" in bicep
+    assert "project: 'ig-trader'" in bicep
+    assert "purpose: 'db-bootstrap-temporary'" in bicep
+    assert "'execution-authority': 'none'" in bicep
     assert "@sha256" in (
         ROOT / "infra/azure/dev-shadow-db-bootstrap.parameters.bicepparam"
     ).read_text(encoding="utf-8")
@@ -327,6 +354,19 @@ def test_ci_has_dedicated_bootstrap_postgresql_image_and_evidence_gates() -> Non
     assert '"g4b_db_bootstrap": _junit' in evidence
     assert '"g4b_db_bootstrap_postgres": _junit' in evidence
     assert "db-bootstrap-image-inspection.json" in evidence
+
+
+def test_oidc_publisher_supports_both_reviewed_immutable_images() -> None:
+    workflow = (ROOT / ".github/workflows/dev-shadow-image-publish.yaml").read_text(
+        encoding="utf-8"
+    )
+
+    assert "image_kind:" in workflow
+    assert "ig-trader-db-bootstrap" in workflow
+    assert "Dockerfile.db-bootstrap" in workflow
+    assert "tools/g4b_db_bootstrap_image_inspect.py" in workflow
+    assert "IMAGE_TAG=$GITHUB_SHA" in workflow
+    assert "latest" not in workflow.casefold()
 
 
 def _required_local_postgres_dsn() -> str:

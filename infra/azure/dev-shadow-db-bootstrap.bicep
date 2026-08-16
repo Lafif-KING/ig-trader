@@ -37,9 +37,11 @@ param runtimeProbeJobName string = 'igtrdevfrc-runtime-db-probe'
 param bootstrapImage string
 
 param tags object = {
+  project: 'ig-trader'
   application: 'ig-trader'
   environment: 'dev-shadow'
-  executionAuthority: 'database-bootstrap-only'
+  purpose: 'db-bootstrap-temporary'
+  'execution-authority': 'none'
   lifecycle: 'temporary'
   managedBy: 'bicep'
   workOrder: 'G4B-02B2A'
@@ -128,9 +130,9 @@ resource bootstrapJob 'Microsoft.App/jobs@2025-01-01' = if (!bootstrapIdentityOn
           name: 'db-bootstrap'
           image: bootstrapImage
           args: [
-            'bootstrap-admin'
+            'schema-inspect'
             '--evidence'
-            '/tmp/bootstrap-admin-evidence.json'
+            '/tmp/schema-inspection-evidence.json'
           ]
           env: [
             {
@@ -176,7 +178,7 @@ resource runtimeProbeJob 'Microsoft.App/jobs@2025-01-01' = if (!bootstrapIdentit
   name: runtimeProbeJobName
   location: location
   tags: union(tags, {
-    executionAuthority: 'database-probe-only'
+    purpose: 'runtime-db-probe-temporary'
   })
   identity: {
     type: 'UserAssigned'

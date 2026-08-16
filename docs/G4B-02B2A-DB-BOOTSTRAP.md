@@ -9,8 +9,10 @@ image, restart the application, or enable broker execution.
 The dedicated `Dockerfile.db-bootstrap` uses the same pinned Python base and
 locked production dependency set as the application image. Its project inputs
 are limited to `db_bootstrap.py`, `execution_lease.py`, the package marker, and
-the two reviewed migrations. It runs as UID/GID 10001 and has these two modes:
+the two reviewed migrations. It runs as UID/GID 10001 and has these three modes:
 
+- `python -m ig_trader.db_bootstrap schema-inspect` performs a read-only,
+  fail-closed pre-migration classification as the temporary administrator.
 - `python -m ig_trader.db_bootstrap bootstrap-admin` performs the one-time
   administrative bootstrap.
 - `python -m ig_trader.db_bootstrap runtime-probe` proves the permanent runtime
@@ -24,8 +26,9 @@ The reviewed migration identities are immutable inputs:
 | `002_execution_lease_fencing.sql` | `731b918b573ee232aab3fa709e7a41b5ac03e11f4f81d08458f8fcefcb16599c` |
 
 The module refuses to open the database when either file differs. It inventories
-the `trading` schema's relations, sequences, functions, triggers, required
-column constraint, and migration ledger. Blank means apply 001 and then 002;
+the `trading` schema's relations, sequences, functions, triggers, table
+constraint footprint, required column constraint, and migration ledger. Blank
+means apply 001 and then 002;
 complete 001 plus absent 002 means apply 002; both complete means verify only.
 Any partial object set, unknown object, unknown ledger entry, missing ledger
 entry, or checksum mismatch fails closed as `DATABASE_SCHEMA_DRIFT`.
@@ -113,14 +116,18 @@ G4B-02B2A:
    `AcrPull` assignment.
 4. Add the temporary UAMI as the PostgreSQL Entra administrator child.
 5. Create both finite manual Container Apps Jobs in the existing environment.
-6. Start the bootstrap job once and accept only sanitized passing evidence.
-7. Start the runtime-probe job once and accept only sanitized passing evidence.
-8. Delete the runtime-probe and bootstrap Jobs.
+6. Start the bootstrap job in its default `schema-inspect` mode and accept only
+   `BLANK`, `001_COMPLETE_ONLY`, or `001_AND_002_COMPLETE` evidence.
+7. Start the same finite job exactly once with the reviewed `bootstrap-admin`
+   argument override and accept only sanitized passing evidence.
+8. Start the runtime-probe job once and accept only sanitized passing evidence.
 9. Delete the PostgreSQL temporary administrator child.
-10. Delete the temporary ACR role assignment.
-11. Delete the temporary bootstrap UAMI.
-12. Verify the runtime role remains non-admin and the application remains
-    `NO_EXECUTION` with one ready replica.
+10. Run the runtime probe again to prove non-admin access survives teardown.
+11. Delete the runtime-probe and bootstrap Jobs.
+12. Delete the temporary ACR role assignment.
+13. Delete the temporary bootstrap UAMI.
+14. Verify the runtime role remains non-admin and the application remains
+   `NO_EXECUTION` with one ready replica.
 
 If either job fails, do not retry automatically and do not remove evidence.
 Stop for schema, identity, privilege, or networking review. The permanent

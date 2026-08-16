@@ -14,6 +14,13 @@ on:
         description: Exact reviewed 40-character main commit SHA
         required: true
         type: string
+      image_kind:
+        description: Exact reviewed immutable image to publish
+        required: true
+        type: choice
+        options:
+          - normal
+          - db_bootstrap
 
 permissions:
   contents: read
@@ -186,6 +193,29 @@ jobs:
           test "$AZURE_REGISTRY_NAME" = "igtrdevfrcbzkxc6c6acr"
           test "$AZURE_IMAGE_REPOSITORY" = "ig-trader"
 
+      - name: Resolve the exact immutable image target
+        if: inputs.mode == 'publish'
+        env:
+          AZURE_IMAGE_REPOSITORY: ${{ vars.AZURE_IMAGE_REPOSITORY }}
+          IMAGE_KIND_INPUT: ${{ inputs.image_kind }}
+        run: |
+          case "$IMAGE_KIND_INPUT" in
+            normal)
+              image_repository="$AZURE_IMAGE_REPOSITORY"
+              ;;
+            db_bootstrap)
+              image_repository="ig-trader-db-bootstrap"
+              ;;
+            *)
+              echo "unsupported image kind" >&2
+              exit 1
+              ;;
+          esac
+          test "$AZURE_IMAGE_REPOSITORY" = "ig-trader"
+          echo "IMAGE_KIND=$IMAGE_KIND_INPUT" >> "$GITHUB_ENV"
+          echo "IMAGE_REPOSITORY=$image_repository" >> "$GITHUB_ENV"
+          echo "IMAGE_TAG=$GITHUB_SHA" >> "$GITHUB_ENV"
+
       - name: Authenticate publisher to Azure through OIDC
         if: inputs.mode == 'publish'
         uses: azure/login@7184910d9eb2b1c5e48f7073824a90609bb9b6d6 # v2
@@ -198,7 +228,6 @@ jobs:
         if: inputs.mode == 'publish'
         env:
           AZURE_REGISTRY_NAME: ${{ vars.AZURE_REGISTRY_NAME }}
-          AZURE_IMAGE_REPOSITORY: ${{ vars.AZURE_IMAGE_REPOSITORY }}
           AZURE_TENANT_ID: ${{ vars.AZURE_TENANT_ID }}
         run: |
           arm_access_token="$(az account get-access-token \
@@ -221,7 +250,7 @@ jobs:
             --request POST \
             --data-urlencode "grant_type=refresh_token" \
             --data-urlencode "service=$AZURE_REGISTRY_NAME.azurecr.io" \
-            --data-urlencode "scope=repository:$AZURE_IMAGE_REPOSITORY:pull,push" \
+            --data-urlencode "scope=repository:$IMAGE_REPOSITORY:pull,push" \
             --data-urlencode "refresh_token=$refresh_token" \
             "https://$AZURE_REGISTRY_NAME.azurecr.io/oauth2/token" \
             | python -c 'import json, sys; print(json.load(sys.stdin)["access_token"])')"
@@ -232,13 +261,12 @@ jobs:
             "$AZURE_REGISTRY_NAME.azurecr.io" \
             --username 00000000-0000-0000-0000-000000000000 \
             --password-stdin
-          image_uri="$AZURE_REGISTRY_NAME.azurecr.io/$AZURE_IMAGE_REPOSITORY:$GITHUB_SHA"
           status="$(curl --silent --show-error \
             --output /dev/null \
             --write-out '%{http_code}' \
             --header "Authorization: Bearer $repository_token" \
             --header "Accept: application/vnd.docker.distribution.manifest.v2+json" \
-            "https://$AZURE_REGISTRY_NAME.azurecr.io/v2/$AZURE_IMAGE_REPOSITORY/manifests/$GITHUB_SHA")"
+            "https://$AZURE_REGISTRY_NAME.azurecr.io/v2/$IMAGE_REPOSITORY/manifests/$IMAGE_TAG")"
           if [[ "$status" == "200" ]]; then
             echo "immutable commit tag already exists; refusing to overwrite it" >&2
             exit 1
@@ -252,35 +280,59 @@ jobs:
         if: inputs.mode == 'publish'
         env:
           AZURE_REGISTRY_NAME: ${{ vars.AZURE_REGISTRY_NAME }}
-          AZURE_IMAGE_REPOSITORY: ${{ vars.AZURE_IMAGE_REPOSITORY }}
           BASE_IMAGE: python:3.13.14-slim-bookworm@sha256:9d7f287598e1a5a978c015ee176d8216435aaf335ed69ac3c38dd1bbb10e8d64
         run: |
-          image_uri="$AZURE_REGISTRY_NAME.azurecr.io/$AZURE_IMAGE_REPOSITORY:$GITHUB_SHA"
+          image_uri="$AZURE_REGISTRY_NAME.azurecr.io/$IMAGE_REPOSITORY:$IMAGE_TAG"
           docker pull "$BASE_IMAGE"
-          docker build \
-            --build-arg "APP_COMMIT_SHA=$GITHUB_SHA" \
-            --build-arg "APP_SOURCE_URL=$GITHUB_SERVER_URL/$GITHUB_REPOSITORY" \
-            --build-arg "APP_VERSION=0.1.0" \
-            --tag "$image_uri" \
-            .
-          poetry run python tools/g4a_container_smoke.py \
-            --image "$image_uri" \
-            --expected-commit "$GITHUB_SHA" \
-            --evidence artifacts/image-publish/container-smoke.json
-          poetry run python tools/g4a_image_inspect.py \
-            --image "$image_uri" \
-            --expected-base "$BASE_IMAGE" \
-            --expected-commit "$GITHUB_SHA" \
-            --evidence artifacts/image-publish/image-inspection.json
-          sha256sum Dockerfile poetry.lock > artifacts/image-publish/build-inputs.sha256
+          if [[ "$IMAGE_KIND" == "normal" ]]; then
+            docker build \
+              --build-arg "APP_COMMIT_SHA=$GITHUB_SHA" \
+              --build-arg "APP_SOURCE_URL=$GITHUB_SERVER_URL/$GITHUB_REPOSITORY" \
+              --build-arg "APP_VERSION=0.1.0" \
+              --tag "$image_uri" \
+              .
+            poetry run python tools/g4a_container_smoke.py \
+              --image "$image_uri" \
+              --expected-commit "$GITHUB_SHA" \
+              --evidence artifacts/image-publish/container-smoke.json
+            poetry run python tools/g4a_image_inspect.py \
+              --image "$image_uri" \
+              --expected-base "$BASE_IMAGE" \
+              --expected-commit "$GITHUB_SHA" \
+              --evidence artifacts/image-publish/image-inspection.json
+            sha256sum Dockerfile poetry.lock \
+              > artifacts/image-publish/build-inputs.sha256
+          else
+            docker build \
+              --file Dockerfile.db-bootstrap \
+              --build-arg "APP_COMMIT_SHA=$GITHUB_SHA" \
+              --build-arg "APP_SOURCE_URL=$GITHUB_SERVER_URL/$GITHUB_REPOSITORY" \
+              --build-arg "APP_VERSION=0.1.0" \
+              --tag "$image_uri" \
+              .
+            docker run --rm --network none "$image_uri" --help \
+              > artifacts/image-publish/db-bootstrap-smoke.txt
+            poetry run python tools/g4b_db_bootstrap_image_inspect.py \
+              --image "$image_uri" \
+              --expected-base "$BASE_IMAGE" \
+              --expected-commit "$GITHUB_SHA" \
+              --evidence artifacts/image-publish/db-bootstrap-image-inspection.json
+            sha256sum \
+              Dockerfile.db-bootstrap \
+              poetry.lock \
+              src/ig_trader/db_bootstrap.py \
+              src/ig_trader/execution_lease.py \
+              migrations/postgresql/001_execution_state.sql \
+              migrations/postgresql/002_execution_lease_fencing.sql \
+              > artifacts/image-publish/build-inputs.sha256
+          fi
 
       - name: Push once and verify the immutable registry digest
         if: inputs.mode == 'publish'
         env:
           AZURE_REGISTRY_NAME: ${{ vars.AZURE_REGISTRY_NAME }}
-          AZURE_IMAGE_REPOSITORY: ${{ vars.AZURE_IMAGE_REPOSITORY }}
         run: |
-          image_uri="$AZURE_REGISTRY_NAME.azurecr.io/$AZURE_IMAGE_REPOSITORY:$GITHUB_SHA"
+          image_uri="$AZURE_REGISTRY_NAME.azurecr.io/$IMAGE_REPOSITORY:$IMAGE_TAG"
           docker push "$image_uri"
           repo_digest="$(docker image inspect \
             --format='{{join .RepoDigests "\n"}}' \
@@ -294,18 +346,18 @@ jobs:
           curl --fail --silent --show-error --head \
             --header "Authorization: Bearer $ACR_REPOSITORY_TOKEN" \
             --header "Accept: application/vnd.docker.distribution.manifest.v2+json" \
-            "https://$AZURE_REGISTRY_NAME.azurecr.io/v2/$AZURE_IMAGE_REPOSITORY/manifests/$digest" \
+            "https://$AZURE_REGISTRY_NAME.azurecr.io/v2/$IMAGE_REPOSITORY/manifests/$digest" \
             > artifacts/image-publish/registry-manifest-headers.txt
           header_digest="$(awk 'BEGIN {IGNORECASE=1} /^docker-content-digest:/ {gsub("\r", ""); print $2}' \
             artifacts/image-publish/registry-manifest-headers.txt)"
           test "$header_digest" = "$digest"
-          docker pull "$AZURE_REGISTRY_NAME.azurecr.io/$AZURE_IMAGE_REPOSITORY@$digest"
+          docker pull "$AZURE_REGISTRY_NAME.azurecr.io/$IMAGE_REPOSITORY@$digest"
           remote_revision="$(docker image inspect \
             --format '{{index .Config.Labels "org.opencontainers.image.revision"}}' \
-            "$AZURE_REGISTRY_NAME.azurecr.io/$AZURE_IMAGE_REPOSITORY@$digest")"
+            "$AZURE_REGISTRY_NAME.azurecr.io/$IMAGE_REPOSITORY@$digest")"
           remote_user="$(docker image inspect \
             --format '{{.Config.User}}' \
-            "$AZURE_REGISTRY_NAME.azurecr.io/$AZURE_IMAGE_REPOSITORY@$digest")"
+            "$AZURE_REGISTRY_NAME.azurecr.io/$IMAGE_REPOSITORY@$digest")"
           test "$remote_revision" = "$GITHUB_SHA"
           test "$remote_user" = "10001:10001"
           echo "IMAGE_DIGEST=$digest" >> "$GITHUB_ENV"
@@ -314,7 +366,6 @@ jobs:
         if: inputs.mode == 'publish'
         env:
           AZURE_REGISTRY_NAME: ${{ vars.AZURE_REGISTRY_NAME }}
-          AZURE_IMAGE_REPOSITORY: ${{ vars.AZURE_IMAGE_REPOSITORY }}
         run: |
           poetry run python - <<'PY'
           import json
@@ -325,12 +376,13 @@ jobs:
               "classification": "PASS_IMMUTABLE_IMAGE_PUBLISH",
               "commit_sha": os.environ["GITHUB_SHA"],
               "image_digest": os.environ["IMAGE_DIGEST"],
+              "image_kind": os.environ["IMAGE_KIND"],
               "image_repository": (
                   os.environ["AZURE_REGISTRY_NAME"]
                   + ".azurecr.io/"
-                  + os.environ["AZURE_IMAGE_REPOSITORY"]
+                  + os.environ["IMAGE_REPOSITORY"]
               ),
-              "immutable_tag": os.environ["GITHUB_SHA"],
+              "immutable_tag": os.environ["IMAGE_TAG"],
               "mutable_aliases_created": [],
               "publisher_role": "AcrPush",
               "publisher_scope": "existing ACR only",
@@ -346,7 +398,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: dev-shadow-image-${{ inputs.mode }}-${{ github.sha }}
+          name: dev-shadow-image-${{ inputs.mode }}-${{ inputs.image_kind }}-${{ github.sha }}
           path: artifacts/image-publish
           if-no-files-found: error
           retention-days: 30

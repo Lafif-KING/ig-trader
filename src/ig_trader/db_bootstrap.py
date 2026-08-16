@@ -52,6 +52,7 @@ _FORBIDDEN_ENVIRONMENT = {
 class BootstrapClassification(StrEnum):
     """Sanitized terminal classifications emitted by the finite jobs."""
 
+    PASS_SCHEMA_INSPECTION = "PASS_SCHEMA_INSPECTION"
     PASS_BOOTSTRAP_ADMIN = "PASS_BOOTSTRAP_ADMIN"
     PASS_RUNTIME_PROBE = "PASS_RUNTIME_PROBE"
     DATABASE_SCHEMA_DRIFT = "DATABASE_SCHEMA_DRIFT"
@@ -89,6 +90,14 @@ class MigrationState(StrEnum):
     PARTIAL_DRIFTED = "PARTIAL_DRIFTED"
 
 
+class SchemaClassification(StrEnum):
+    """Accepted pre-bootstrap database states."""
+
+    BLANK = "BLANK"
+    MIGRATION_001_COMPLETE_ONLY = "001_COMPLETE_ONLY"
+    MIGRATIONS_001_AND_002_COMPLETE = "001_AND_002_COMPLETE"
+
+
 @dataclass(frozen=True)
 class MigrationDefinition:
     version: str
@@ -113,6 +122,31 @@ MIGRATION_001 = MigrationDefinition(
             "relation:reconciliation_state",
             "relation:evidence_metadata",
             "relation:worker_leases",
+            "constraint-count:schema_migrations:c:1",
+            "constraint-count:schema_migrations:p:1",
+            "constraint-count:trade_intents:c:6",
+            "constraint-count:trade_intents:p:1",
+            "constraint-count:trade_intents:u:1",
+            "constraint-count:lifecycle_events:c:2",
+            "constraint-count:lifecycle_events:f:1",
+            "constraint-count:lifecycle_events:p:1",
+            "constraint-count:lifecycle_events:u:1",
+            "constraint-count:broker_references:c:3",
+            "constraint-count:broker_references:f:1",
+            "constraint-count:broker_references:p:1",
+            "constraint-count:broker_references:u:2",
+            "constraint-count:position_state:c:3",
+            "constraint-count:position_state:f:1",
+            "constraint-count:position_state:p:1",
+            "constraint-count:position_state:u:2",
+            "constraint-count:reconciliation_state:c:3",
+            "constraint-count:reconciliation_state:p:1",
+            "constraint-count:evidence_metadata:c:3",
+            "constraint-count:evidence_metadata:f:1",
+            "constraint-count:evidence_metadata:p:1",
+            "constraint-count:evidence_metadata:u:1",
+            "constraint-count:worker_leases:c:4",
+            "constraint-count:worker_leases:p:1",
             "function:reject_append_only_mutation",
             "trigger:lifecycle_events_append_only",
             "trigger:evidence_metadata_append_only",
@@ -128,6 +162,8 @@ MIGRATION_002 = MigrationDefinition(
         {
             "relation:execution_cycle_claims",
             "relation:worker_lease_fencing_token_seq",
+            "constraint-count:execution_cycle_claims:c:4",
+            "constraint-count:execution_cycle_claims:p:1",
             "column:worker_leases.heartbeat_at:not-null",
             "function:acquire_execution_lease",
             "function:renew_execution_lease",
@@ -219,15 +255,17 @@ class JobConfig:
             raise BootstrapError("private Azure PostgreSQL host is required")
         if database != DATABASE_NAME:
             raise BootstrapError("only the accepted ig_trader database is supported")
-        if mode == "bootstrap-admin":
+        if mode in {"bootstrap-admin", "schema-inspect"}:
             if identity_name != BOOTSTRAP_PRINCIPAL_NAME:
                 raise IdentityMismatch("bootstrap identity is required")
-            runtime_object_id = _uuid(
-                environment.get("RUNTIME_UAMI_OBJECT_ID", ""),
-                "RUNTIME_UAMI_OBJECT_ID",
-            )
-            if runtime_object_id == identity_object_id:
-                raise IdentityMismatch("bootstrap and runtime identities must be distinct")
+            runtime_object_id = None
+            if mode == "bootstrap-admin":
+                runtime_object_id = _uuid(
+                    environment.get("RUNTIME_UAMI_OBJECT_ID", ""),
+                    "RUNTIME_UAMI_OBJECT_ID",
+                )
+                if runtime_object_id == identity_object_id:
+                    raise IdentityMismatch("bootstrap and runtime identities must be distinct")
             database_user = BOOTSTRAP_PRINCIPAL_NAME
         elif mode == "runtime-probe":
             if identity_name != RUNTIME_PRINCIPAL_NAME:
@@ -345,6 +383,17 @@ def inspect_schema(connection: Any) -> SchemaSnapshot:
         """
     ).fetchall()
     markers.update(f"trigger:{row[0]}" for row in triggers)
+    constraints = connection.execute(
+        """
+        SELECT c.relname, constraint_record.contype, count(*)
+        FROM pg_constraint AS constraint_record
+        JOIN pg_class AS c ON c.oid = constraint_record.conrelid
+        JOIN pg_namespace AS n ON n.oid = c.relnamespace
+        WHERE n.nspname = 'trading'
+        GROUP BY c.relname, constraint_record.contype
+        """
+    ).fetchall()
+    markers.update(f"constraint-count:{row[0]}:{row[1]}:{row[2]}" for row in constraints)
     heartbeat = connection.execute(
         """
         SELECT is_nullable
@@ -394,6 +443,19 @@ def plan_migrations(snapshot: SchemaSnapshot) -> tuple[MigrationDefinition, ...]
     if second is MigrationState.ABSENT:
         return (MIGRATION_002,)
     return ()
+
+
+def classify_schema(snapshot: SchemaSnapshot) -> SchemaClassification:
+    """Classify a verified schema without applying migrations or grants."""
+
+    planned = plan_migrations(snapshot)
+    if planned == MIGRATIONS:
+        return SchemaClassification.BLANK
+    if planned == (MIGRATION_002,):
+        return SchemaClassification.MIGRATION_001_COMPLETE_ONLY
+    if not planned:
+        return SchemaClassification.MIGRATIONS_001_AND_002_COMPLETE
+    raise DatabaseSchemaDrift("migration plan does not match an accepted state")
 
 
 def apply_required_migrations(
@@ -666,6 +728,41 @@ def _current_user(connection: Any) -> str:
     return str(connection.execute("SELECT current_user").fetchone()[0])
 
 
+def run_schema_inspection(
+    config: JobConfig,
+    connection_factory: Callable[[], Any],
+    administrator_connection_factory: Callable[[], Any],
+    migration_root: Path,
+) -> dict[str, Any]:
+    """Inspect the database as the temporary admin without mutating it."""
+
+    sources = load_migration_sources(migration_root)
+    with administrator_connection_factory() as administrator_connection:
+        if _current_user(administrator_connection) != BOOTSTRAP_PRINCIPAL_NAME:
+            raise IdentityMismatch("bootstrap connection identity is unexpected")
+        verify_bootstrap_administrator(administrator_connection, config)
+    with connection_factory() as connection:
+        if _current_user(connection) != BOOTSTRAP_PRINCIPAL_NAME:
+            raise IdentityMismatch("bootstrap connection identity is unexpected")
+        snapshot = inspect_schema(connection)
+        classification = classify_schema(snapshot)
+        planned = plan_migrations(snapshot)
+        connection.rollback()
+    return {
+        "classification": BootstrapClassification.PASS_SCHEMA_INSPECTION,
+        "database": DATABASE_NAME,
+        "migration_hashes": {
+            source.definition.version: source.definition.checksum_sha256 for source in sources
+        },
+        "migration_state": {
+            migration.version: snapshot.state(migration).value for migration in MIGRATIONS
+        },
+        "planned_migrations": [migration.version for migration in planned],
+        "schema_classification": classification,
+        "token_acquired": True,
+    }
+
+
 def run_bootstrap_admin(
     config: JobConfig,
     connection_factory: Callable[[], Any],
@@ -806,14 +903,24 @@ def _default_migration_root() -> Path:
 
 def main() -> int:
     parser = argparse.ArgumentParser()
-    parser.add_argument("mode", choices=("bootstrap-admin", "runtime-probe"))
+    parser.add_argument(
+        "mode",
+        choices=("schema-inspect", "bootstrap-admin", "runtime-probe"),
+    )
     parser.add_argument("--evidence", type=Path, default=Path("/tmp/db-job-evidence.json"))
     parser.add_argument("--migration-root", type=Path, default=_default_migration_root())
     arguments = parser.parse_args()
     try:
         config = JobConfig.from_environment(arguments.mode, os.environ)
         factory = ManagedIdentityConnectionFactory(config)
-        if arguments.mode == "bootstrap-admin":
+        if arguments.mode == "schema-inspect":
+            evidence = run_schema_inspection(
+                config,
+                factory,
+                factory.administrator_connection,
+                arguments.migration_root,
+            )
+        elif arguments.mode == "bootstrap-admin":
             evidence = run_bootstrap_admin(
                 config,
                 factory,
