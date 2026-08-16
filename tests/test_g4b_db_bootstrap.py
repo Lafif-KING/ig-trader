@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import sys
 from dataclasses import replace
 from pathlib import Path
 from uuid import uuid4
@@ -28,12 +29,18 @@ from src.ig_trader.db_bootstrap import (
     SchemaSnapshot,
     apply_required_migrations,
     classify_schema,
+    emit_sanitized_evidence,
     inspect_schema,
     load_migration_sources,
     plan_migrations,
+    schema_inspection_evidence,
+    validate_execution_nonce,
     validate_runtime_principal,
     validate_runtime_privileges,
     write_sanitized_evidence,
+)
+from src.ig_trader.db_bootstrap import (
+    main as db_bootstrap_main,
 )
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -287,6 +294,98 @@ def test_sanitized_evidence_contains_only_boolean_token_result(tmp_path: Path) -
     }
 
 
+def test_observability_canary_emits_one_nonce_linked_line_without_db_access(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    evidence_path = tmp_path / "canary.json"
+
+    def reject_database_factory(_config: object) -> None:
+        pytest.fail("observability canary must not construct database credentials")
+
+    monkeypatch.setattr(
+        "src.ig_trader.db_bootstrap.ManagedIdentityConnectionFactory",
+        reject_database_factory,
+    )
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "db-bootstrap",
+            "observability-canary",
+            "--execution-nonce",
+            "nonce-1234",
+            "--evidence",
+            str(evidence_path),
+        ],
+    )
+
+    assert db_bootstrap_main() == 0
+    assert capsys.readouterr().out.splitlines() == [
+        'G4B_EVIDENCE={"classification":"CANARY_PASS",'
+        '"event":"observability_canary","nonce":"nonce-1234"}'
+    ]
+    assert json.loads(evidence_path.read_text(encoding="utf-8")) == {
+        "classification": "CANARY_PASS",
+        "event": "observability_canary",
+        "nonce": "nonce-1234",
+    }
+
+
+@pytest.mark.parametrize("nonce", ["", "short", "contains space", "bad.dot.value"])
+def test_execution_nonce_rejects_unlinkable_values(nonce: str) -> None:
+    with pytest.raises(BootstrapError, match="nonce"):
+        validate_execution_nonce(nonce)
+
+
+def test_schema_inspection_evidence_has_required_read_only_contract() -> None:
+    sources = load_migration_sources(MIGRATION_ROOT)
+    evidence = schema_inspection_evidence(
+        SchemaSnapshot(markers=frozenset(), ledger={}),
+        sources,
+        SchemaClassification.BLANK,
+        (MIGRATION_001, MIGRATION_002),
+        connection_tls=True,
+    )
+
+    assert evidence == {
+        "classification": "PASS_SCHEMA_INSPECTION",
+        "connection_tls": True,
+        "database": "ig_trader",
+        "drift_detected": False,
+        "event": "db_schema_inspection",
+        "migration_001": "ABSENT",
+        "migration_001_expected_hash": EXPECTED_MIGRATION_HASHES["001_execution_state"],
+        "migration_002": "ABSENT",
+        "migration_002_expected_hash": EXPECTED_MIGRATION_HASHES["002_execution_lease_fencing"],
+        "migration_hashes": EXPECTED_MIGRATION_HASHES,
+        "migration_state": {
+            "001_execution_state": "ABSENT",
+            "002_execution_lease_fencing": "ABSENT",
+        },
+        "mode": "read_only",
+        "planned_migrations": [
+            "001_execution_state",
+            "002_execution_lease_fencing",
+        ],
+        "read_only": True,
+        "schema_classification": "BLANK",
+        "schema_constraints_verified": True,
+        "token_acquired": True,
+        "token_memory_only": True,
+        "tls_required": True,
+        "unknown_object_count": 0,
+    }
+
+
+def test_console_evidence_rejects_token_shaped_material() -> None:
+    token = "eyJ" + ("a" * 24) + "." + ("b" * 24) + "." + ("c" * 24)
+
+    with pytest.raises(BootstrapError, match="token-shaped"):
+        emit_sanitized_evidence({"value": token})
+
+
 def test_cloud_bootstrap_source_has_no_sqlite_fallback_or_broker_import() -> None:
     source = (ROOT / "src/ig_trader/db_bootstrap.py").read_text(encoding="utf-8")
 
@@ -300,6 +399,10 @@ def test_cloud_bootstrap_source_has_no_sqlite_fallback_or_broker_import() -> Non
     assert '"successor_fencing_token": successor.fencing_token' in source
     assert '"token_memory_only": True' in source
     assert '"runtime_privileges": _privilege_evidence(privileges)' in source
+    assert '"observability-canary"' in source
+    assert '"event": "db_schema_inspection"' in source
+    assert '"execution_nonce"' in source
+    assert "print(_EVIDENCE_PREFIX + serialized" in source
 
 
 def test_bootstrap_image_contains_only_required_project_inputs() -> None:

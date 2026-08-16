@@ -13,7 +13,7 @@ from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
-from typing import Any
+from typing import Any, TextIO
 from uuid import UUID
 
 from ig_trader.execution_lease import (
@@ -41,6 +41,8 @@ _POSTGRES_HOST_PATTERN = re.compile(
     r"[a-z0-9](?:[a-z0-9.-]{0,251}[a-z0-9])?\.postgres\.database\.azure\.com\Z"
 )
 _INSTANCE_PATTERN = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}\Z")
+_EXECUTION_NONCE_PATTERN = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]{7,63}\Z")
+_EVIDENCE_PREFIX = "G4B_EVIDENCE="
 _FORBIDDEN_ENVIRONMENT = {
     "DATABASE_URL",
     "PGPASSWORD",
@@ -740,6 +742,54 @@ def _current_user(connection: Any) -> str:
     return str(connection.execute("SELECT current_user").fetchone()[0])
 
 
+def _connection_uses_tls(connection: Any) -> bool:
+    row = connection.execute("SELECT ssl FROM pg_stat_ssl WHERE pid = pg_backend_pid()").fetchone()
+    if row is None or not bool(row[0]):
+        raise DatabaseUnavailable("PostgreSQL connection is not protected by TLS")
+    return True
+
+
+def schema_inspection_evidence(
+    snapshot: SchemaSnapshot,
+    sources: Sequence[MigrationSource],
+    classification: SchemaClassification,
+    planned: Sequence[MigrationDefinition],
+    *,
+    connection_tls: bool,
+) -> dict[str, Any]:
+    """Build the complete sanitized, read-only schema classification record."""
+
+    unknown_object_count = len(snapshot.markers - _KNOWN_MARKERS) + len(
+        set(snapshot.ledger) - set(EXPECTED_MIGRATION_HASHES)
+    )
+    return {
+        "classification": BootstrapClassification.PASS_SCHEMA_INSPECTION,
+        "connection_tls": connection_tls,
+        "database": DATABASE_NAME,
+        "drift_detected": False,
+        "event": "db_schema_inspection",
+        "migration_001": snapshot.state(MIGRATION_001).value,
+        "migration_001_expected_hash": MIGRATION_001.checksum_sha256,
+        "migration_002": snapshot.state(MIGRATION_002).value,
+        "migration_002_expected_hash": MIGRATION_002.checksum_sha256,
+        "migration_hashes": {
+            source.definition.version: source.definition.checksum_sha256 for source in sources
+        },
+        "migration_state": {
+            migration.version: snapshot.state(migration).value for migration in MIGRATIONS
+        },
+        "mode": "read_only",
+        "planned_migrations": [migration.version for migration in planned],
+        "read_only": True,
+        "schema_classification": classification,
+        "schema_constraints_verified": True,
+        "token_acquired": True,
+        "token_memory_only": True,
+        "tls_required": True,
+        "unknown_object_count": unknown_object_count,
+    }
+
+
 def run_schema_inspection(
     config: JobConfig,
     connection_factory: Callable[[], Any],
@@ -756,27 +806,18 @@ def run_schema_inspection(
     with connection_factory() as connection:
         if _current_user(connection) != BOOTSTRAP_PRINCIPAL_NAME:
             raise IdentityMismatch("bootstrap connection identity is unexpected")
+        connection_tls = _connection_uses_tls(connection)
         snapshot = inspect_schema(connection)
         classification = classify_schema(snapshot)
         planned = plan_migrations(snapshot)
         connection.rollback()
-    return {
-        "classification": BootstrapClassification.PASS_SCHEMA_INSPECTION,
-        "database": DATABASE_NAME,
-        "migration_hashes": {
-            source.definition.version: source.definition.checksum_sha256 for source in sources
-        },
-        "migration_state": {
-            migration.version: snapshot.state(migration).value for migration in MIGRATIONS
-        },
-        "planned_migrations": [migration.version for migration in planned],
-        "read_only": True,
-        "schema_classification": classification,
-        "schema_constraints_verified": True,
-        "token_acquired": True,
-        "token_memory_only": True,
-        "tls_required": True,
-    }
+    return schema_inspection_evidence(
+        snapshot,
+        sources,
+        classification,
+        planned,
+        connection_tls=connection_tls,
+    )
 
 
 def run_bootstrap_admin(
@@ -799,6 +840,7 @@ def run_bootstrap_admin(
     with connection_factory() as connection:
         if _current_user(connection) != BOOTSTRAP_PRINCIPAL_NAME:
             raise IdentityMismatch("bootstrap connection identity is unexpected")
+        connection_tls = _connection_uses_tls(connection)
         before = inspect_schema(connection)
         applied = apply_required_migrations(
             connection,
@@ -815,7 +857,9 @@ def run_bootstrap_admin(
         after = inspect_schema(connection)
     return {
         "classification": BootstrapClassification.PASS_BOOTSTRAP_ADMIN,
+        "connection_tls": connection_tls,
         "database": DATABASE_NAME,
+        "event": "db_bootstrap_admin",
         "migration_before": {
             migration.version: before.state(migration).value for migration in MIGRATIONS
         },
@@ -826,6 +870,7 @@ def run_bootstrap_admin(
             migration.version: migration.checksum_sha256 for migration in MIGRATIONS
         },
         "migrations_applied": list(applied),
+        "mode": "bootstrap_admin",
         "principal_admin": False,
         "principal_created": principal_created,
         "principal_object_id_verified": True,
@@ -843,8 +888,10 @@ def run_runtime_probe(
     connection_factory: Callable[[], Any],
 ) -> dict[str, Any]:
     with connection_factory() as connection:
-        if _current_user(connection) != RUNTIME_PRINCIPAL_NAME:
+        current_user = _current_user(connection)
+        if current_user != RUNTIME_PRINCIPAL_NAME:
             raise IdentityMismatch("runtime connection identity is unexpected")
+        connection_tls = _connection_uses_tls(connection)
         privileges = read_runtime_privileges(connection)
         validate_runtime_privileges(privileges)
 
@@ -878,12 +925,16 @@ def run_runtime_probe(
             store.release(successor)
     return {
         "classification": BootstrapClassification.PASS_RUNTIME_PROBE,
+        "connection_tls": connection_tls,
+        "current_user": current_user,
         "authorized_for_broker_execution": False,
         "database": DATABASE_NAME,
+        "event": "runtime_db_probe",
         "initial_fencing_token": lease.fencing_token,
         "lease_acquired": True,
         "lease_released": True,
         "lease_renewed": True,
+        "mode": "runtime_probe",
         "principal_admin": False,
         "runtime_principal": RUNTIME_PRINCIPAL_NAME,
         "runtime_privileges": _privilege_evidence(privileges),
@@ -906,6 +957,21 @@ def write_sanitized_evidence(path: Path, evidence: Mapping[str, Any]) -> None:
     path.write_text(serialized, encoding="utf-8")
 
 
+def emit_sanitized_evidence(
+    evidence: Mapping[str, Any],
+    *,
+    stream: TextIO | None = None,
+) -> None:
+    """Emit exactly one flushed, machine-readable, token-safe console record."""
+
+    serialized = json.dumps(evidence, separators=(",", ":"), sort_keys=True)
+    if re.search(r"eyJ[A-Za-z0-9_-]{12,}\.", serialized):
+        raise BootstrapError("evidence contains token-shaped material")
+    if stream is None:
+        stream = sys.stdout
+    print(_EVIDENCE_PREFIX + serialized, file=stream, flush=True)
+
+
 def _probe_instance_id(environment: Mapping[str, str]) -> str:
     value = (
         environment.get("CONTAINER_APP_JOB_EXECUTION_NAME", "").strip()
@@ -925,6 +991,13 @@ def _uuid(value: str, name: str) -> str:
         raise BootstrapError(f"{name} must be a UUID") from None
 
 
+def validate_execution_nonce(value: str) -> str:
+    nonce = value.strip()
+    if not _EXECUTION_NONCE_PATTERN.fullmatch(nonce):
+        raise BootstrapError("execution nonce is invalid")
+    return nonce
+
+
 def _default_migration_root() -> Path:
     return Path(__file__).resolve().parents[2] / "migrations" / "postgresql"
 
@@ -933,44 +1006,64 @@ def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument(
         "mode",
-        choices=("schema-inspect", "bootstrap-admin", "runtime-probe"),
+        choices=(
+            "observability-canary",
+            "schema-inspect",
+            "bootstrap-admin",
+            "runtime-probe",
+        ),
     )
+    parser.add_argument("--execution-nonce", required=True)
     parser.add_argument("--evidence", type=Path, default=Path("/tmp/db-job-evidence.json"))
     parser.add_argument("--migration-root", type=Path, default=_default_migration_root())
     arguments = parser.parse_args()
     try:
-        config = JobConfig.from_environment(arguments.mode, os.environ)
-        factory = ManagedIdentityConnectionFactory(config)
-        if arguments.mode == "schema-inspect":
-            evidence = run_schema_inspection(
-                config,
-                factory,
-                factory.administrator_connection,
-                arguments.migration_root,
-            )
-        elif arguments.mode == "bootstrap-admin":
-            evidence = run_bootstrap_admin(
-                config,
-                factory,
-                factory.administrator_connection,
-                arguments.migration_root,
-            )
+        nonce = validate_execution_nonce(arguments.execution_nonce)
+        if arguments.mode == "observability-canary":
+            evidence = {
+                "classification": "CANARY_PASS",
+                "event": "observability_canary",
+                "nonce": nonce,
+            }
         else:
-            evidence = run_runtime_probe(config, factory)
-        evidence["token_acquired"] = factory.token_acquired
+            config = JobConfig.from_environment(arguments.mode, os.environ)
+            factory = ManagedIdentityConnectionFactory(config)
+            if arguments.mode == "schema-inspect":
+                evidence = run_schema_inspection(
+                    config,
+                    factory,
+                    factory.administrator_connection,
+                    arguments.migration_root,
+                )
+            elif arguments.mode == "bootstrap-admin":
+                evidence = run_bootstrap_admin(
+                    config,
+                    factory,
+                    factory.administrator_connection,
+                    arguments.migration_root,
+                )
+            else:
+                evidence = run_runtime_probe(config, factory)
+            evidence["execution_nonce"] = nonce
+            evidence["token_acquired"] = factory.token_acquired
         write_sanitized_evidence(arguments.evidence, evidence)
-        print(json.dumps(evidence, sort_keys=True))
+        emit_sanitized_evidence(evidence)
         return 0
     except BootstrapError as error:
-        failure = {"classification": error.classification, "status": "fail_closed"}
-        print(json.dumps(failure, sort_keys=True), file=sys.stderr)
+        failure = {
+            "classification": error.classification,
+            "event": "db_job_failure",
+            "status": "fail_closed",
+        }
+        emit_sanitized_evidence(failure, stream=sys.stderr)
         return 2
     except LeaseError:
         failure = {
             "classification": BootstrapClassification.DATABASE_UNAVAILABLE,
+            "event": "db_job_failure",
             "status": "fail_closed",
         }
-        print(json.dumps(failure, sort_keys=True), file=sys.stderr)
+        emit_sanitized_evidence(failure, stream=sys.stderr)
         return 2
 
 
