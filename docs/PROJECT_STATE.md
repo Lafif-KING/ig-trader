@@ -106,3 +106,11 @@ monotonic fencing, fenced execution-state writes, explicit replica roles, and
 managed-identity token authentication design. The current runtime remains
 `NO_EXECUTION`, emits `authorized=false`, does not connect to PostgreSQL, and
 has no broker authority. See `docs/G4B-02B1-EXECUTION-LEASE.md`.
+
+G4B-02B2A adds source, a deliberately narrow non-root image, stage-isolated
+Bicep, CI gates, and an operator runbook for a future finite database bootstrap
+and runtime-identity probe. It hash-pins migrations 001/002, fails closed on
+partial or unknown schema state, maps the permanent UAMI by exact Entra object
+ID, and verifies least privilege plus real PostgreSQL lease/fencing behavior.
+No Azure or database mutation is authorized by this source-only stage. See
+`docs/G4B-02B2A-DB-BOOTSTRAP.md`.

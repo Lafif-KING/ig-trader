@@ -44,14 +44,22 @@ def assemble(directory: Path) -> dict[str, Any]:
         "g4a": _junit(directory / "tests-g4a.xml"),
         "g4b_ops": _junit(directory / "tests-g4b-ops.xml"),
         "g4b_lease_unit": _junit(directory / "tests-g4b-lease-unit.xml"),
+        "g4b_db_bootstrap": _junit(directory / "tests-g4b-db-bootstrap.xml"),
+        "g4b_db_bootstrap_postgres": _junit(directory / "tests-g4b-db-bootstrap-postgres.xml"),
         "g4b_lease_fencing": _junit(directory / "tests-g4b-lease-fencing.xml"),
         "g4b_lease_concurrency": _junit(directory / "tests-g4b-lease-concurrency.xml"),
     }
     container = _json(directory / "container-smoke.json")
     image = _json(directory / "image-inspection.json")
+    db_bootstrap_image = _json(directory / "db-bootstrap-image-inspection.json")
     bicep = _json(directory / "bicep-result.json")
     secrets = _json(directory / "secret-scan.json")
-    for name, value in {"container": container, "image": image, "bicep": bicep}.items():
+    for name, value in {
+        "container": container,
+        "image": image,
+        "db_bootstrap_image": db_bootstrap_image,
+        "bicep": bicep,
+    }.items():
         status = value.get("classification", value.get("status"))
         if status not in {"PASS_CONTAINER_SMOKE", "pass"}:
             raise EvidenceError(f"{name} evidence does not pass")
@@ -67,6 +75,7 @@ def assemble(directory: Path) -> dict[str, Any]:
         "candidate_sha": sha,
         "classification": "PASS_REMOTE_CI",
         "container": container,
+        "db_bootstrap_image": db_bootstrap_image,
         "image": image,
         "quality": {
             "format": "pass",
@@ -83,6 +92,7 @@ def assemble(directory: Path) -> dict[str, Any]:
 def _markdown(evidence: dict[str, Any]) -> str:
     tests = evidence["tests"]
     image = evidence["image"]
+    db_bootstrap_image = evidence["db_bootstrap_image"]
     container = evidence["container"]
     safety = container["safety"]
     return "\n".join(
@@ -92,14 +102,18 @@ def _markdown(evidence: dict[str, Any]) -> str:
             f"- Run: `{evidence['run_id']}`",
             f"- Candidate: `{evidence['candidate_sha']}`",
             f"- Complete tests: `{tests['complete']['tests']}` passed",
-            "- G1/G2/G3A/G3B/G4A/G4B-ops/G4B-lease-unit/fencing/concurrency: "
+            "- G1/G2/G3A/G3B/G4A/G4B-ops/G4B-lease-unit/DB-bootstrap/"
+            "DB-bootstrap-PostgreSQL/fencing/concurrency: "
             f"`{tests['g1']['tests']}` / `{tests['g2']['tests']}` / "
             f"`{tests['g3a']['tests']}` / `{tests['g3b']['tests']}` / "
             f"`{tests['g4a']['tests']}` / `{tests['g4b_ops']['tests']}` / "
             f"`{tests['g4b_lease_unit']['tests']}` / "
+            f"`{tests['g4b_db_bootstrap']['tests']}` / "
+            f"`{tests['g4b_db_bootstrap_postgres']['tests']}` / "
             f"`{tests['g4b_lease_fencing']['tests']}` / "
             f"`{tests['g4b_lease_concurrency']['tests']}` passed",
             f"- Image digest: `{image['image_digest']}`",
+            f"- DB bootstrap image digest: `{db_bootstrap_image['image_digest']}`",
             f"- Bicep: `{evidence['bicep']['status']}`",
             f"- Container: `{container['classification']}`",
             f"- Commit reported by container: `{container['readiness']['release']['commit_sha']}`",
