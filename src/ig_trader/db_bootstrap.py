@@ -32,6 +32,7 @@ REMEDIATION_PRINCIPAL_NAME = "igtrdevfrc-db-remediation-identity"
 GRANT_REPAIR_PRINCIPAL_NAME = "igtrdevfrc-db-grant-repair-identity"
 DURABLE_OWNER_NAME = "ig_trader_schema_owner"
 DATABASE_NAME = "ig_trader"
+REJECT_FUNCTION_SIGNATURE = "trading.reject_append_only_mutation()"
 
 EXPECTED_MIGRATION_HASHES = {
     "001_execution_state": "42dcbe2b47c5fed8223a4831d8c594e78c3180f454b71e15358819a9039c8800",
@@ -64,6 +65,7 @@ class BootstrapClassification(StrEnum):
     PASS_OWNERSHIP_REMEDIATION = "PASS_OWNERSHIP_REMEDIATION"
     PASS_PRIVILEGE_AUDIT = "PASS_PRIVILEGE_AUDIT"
     PASS_PRIVILEGE_REPAIR = "PASS_PRIVILEGE_REPAIR"
+    PASS_PRIVILEGE_DRIFT_REPAIR = "PASS_PRIVILEGE_DRIFT_REPAIR"
     DATABASE_SCHEMA_DRIFT = "DATABASE_SCHEMA_DRIFT"
     IDENTITY_MISMATCH = "IDENTITY_MISMATCH"
     PRIVILEGE_MISMATCH = "PRIVILEGE_MISMATCH"
@@ -99,6 +101,10 @@ class OwnershipTransferFailure(BootstrapError):
 
 class RuntimePrivilegeDrift(BootstrapError):
     classification = "RUNTIME_DB_PRIVILEGE_DRIFT"
+
+
+class UnexpectedRuntimePrivilegeDrift(BootstrapError):
+    classification = "RUNTIME_DB_PRIVILEGE_DRIFT_UNEXPECTED"
 
 
 class MigrationState(StrEnum):
@@ -275,6 +281,19 @@ class RuntimePrivilegeAudit:
 
 
 @dataclass(frozen=True)
+class FunctionPrivilegeProvenance:
+    function_owner: str
+    function_acl: str | None
+    direct_runtime_execute: bool
+    public_execute: bool
+    role_execute_sources: tuple[str, ...]
+    runtime_is_owner: bool
+    runtime_effective_execute: bool
+    durable_owner_future_public_execute: bool
+    classification: str
+
+
+@dataclass(frozen=True)
 class PrivilegeSnapshot:
     database_connect: bool
     database_create: bool
@@ -340,7 +359,11 @@ class JobConfig:
                 "ORPHAN_UAMI_OBJECT_ID",
             )
             database_user = REMEDIATION_PRINCIPAL_NAME
-        elif mode in {"privilege-audit", "privilege-repair"}:
+        elif mode in {
+            "privilege-audit",
+            "privilege-repair",
+            "privilege-drift-repair",
+        }:
             if identity_name != GRANT_REPAIR_PRINCIPAL_NAME:
                 raise IdentityMismatch("grant-repair identity is required")
             runtime_object_id = _uuid(
@@ -1177,6 +1200,136 @@ def _runtime_privilege_evidence(audit: RuntimePrivilegeAudit) -> dict[str, Any]:
     }
 
 
+def read_reject_function_provenance(connection: Any) -> FunctionPrivilegeProvenance:
+    row = connection.execute(
+        """
+        SELECT owner_role.rolname,
+               p.proacl::text,
+               EXISTS (
+                   SELECT 1
+                   FROM aclexplode(COALESCE(p.proacl, '{}'::aclitem[])) acl
+                   JOIN pg_roles grantee ON grantee.oid = acl.grantee
+                   WHERE grantee.rolname = %s AND acl.privilege_type = 'EXECUTE'
+               ),
+               EXISTS (
+                   SELECT 1
+                   FROM aclexplode(COALESCE(p.proacl, acldefault('f', p.proowner))) acl
+                   WHERE acl.grantee = 0 AND acl.privilege_type = 'EXECUTE'
+               ),
+               p.proowner = (SELECT oid FROM pg_roles WHERE rolname = %s),
+               has_function_privilege(%s, p.oid, 'EXECUTE')
+        FROM pg_proc p
+        JOIN pg_namespace n ON n.oid = p.pronamespace
+        JOIN pg_roles owner_role ON owner_role.oid = p.proowner
+        WHERE p.oid = to_regprocedure(%s)
+        """,
+        (
+            RUNTIME_PRINCIPAL_NAME,
+            RUNTIME_PRINCIPAL_NAME,
+            RUNTIME_PRINCIPAL_NAME,
+            REJECT_FUNCTION_SIGNATURE,
+        ),
+    ).fetchone()
+    if row is None:
+        raise DatabaseSchemaDrift("append-only rejection function is absent")
+    role_sources = tuple(
+        str(item[0])
+        for item in connection.execute(
+            """
+            SELECT DISTINCT grantee.rolname
+            FROM pg_proc p
+            CROSS JOIN LATERAL aclexplode(COALESCE(p.proacl, '{}'::aclitem[])) acl
+            JOIN pg_roles grantee ON grantee.oid = acl.grantee
+            WHERE p.oid = to_regprocedure(%s)
+              AND acl.privilege_type = 'EXECUTE'
+              AND grantee.rolname <> %s
+              AND pg_has_role(%s, grantee.oid, 'USAGE')
+            ORDER BY grantee.rolname
+            """,
+            (
+                REJECT_FUNCTION_SIGNATURE,
+                RUNTIME_PRINCIPAL_NAME,
+                RUNTIME_PRINCIPAL_NAME,
+            ),
+        ).fetchall()
+    )
+    future_public = bool(
+        connection.execute(
+            """
+            WITH owner_role AS (
+                SELECT oid FROM pg_roles WHERE rolname = %s
+            ), global_acl AS (
+                SELECT COALESCE(
+                    (SELECT d.defaclacl
+                     FROM pg_default_acl d, owner_role o
+                     WHERE d.defaclrole = o.oid
+                       AND d.defaclobjtype = 'f'
+                       AND d.defaclnamespace = 0),
+                    acldefault('f', (SELECT oid FROM owner_role))
+                ) AS acl
+            )
+            SELECT EXISTS (
+                SELECT 1 FROM global_acl g, LATERAL aclexplode(g.acl) a
+                WHERE a.grantee = 0 AND a.privilege_type = 'EXECUTE'
+            ) OR EXISTS (
+                SELECT 1
+                FROM pg_default_acl d
+                JOIN owner_role o ON o.oid = d.defaclrole
+                CROSS JOIN LATERAL aclexplode(d.defaclacl) a
+                WHERE d.defaclobjtype = 'f'
+                  AND d.defaclnamespace <> 0
+                  AND a.grantee = 0
+                  AND a.privilege_type = 'EXECUTE'
+            )
+            """,
+            (DURABLE_OWNER_NAME,),
+        ).fetchone()[0]
+    )
+    direct_runtime = bool(row[2])
+    public_execute = bool(row[3])
+    runtime_is_owner = bool(row[4])
+    runtime_effective = bool(row[5])
+    if direct_runtime:
+        classification = "DIRECT_GRANT"
+    elif public_execute:
+        classification = "PUBLIC_GRANT"
+    elif role_sources:
+        classification = "ROLE_INHERITANCE"
+    elif runtime_is_owner:
+        classification = "OWNER_PRIVILEGE"
+    elif runtime_effective:
+        classification = "OTHER"
+    else:
+        classification = "NONE"
+    return FunctionPrivilegeProvenance(
+        function_owner=str(row[0]),
+        function_acl=None if row[1] is None else str(row[1]),
+        direct_runtime_execute=direct_runtime,
+        public_execute=public_execute,
+        role_execute_sources=role_sources,
+        runtime_is_owner=runtime_is_owner,
+        runtime_effective_execute=runtime_effective,
+        durable_owner_future_public_execute=future_public,
+        classification=classification,
+    )
+
+
+def _function_provenance_evidence(
+    provenance: FunctionPrivilegeProvenance,
+) -> dict[str, Any]:
+    return {
+        "classification": provenance.classification,
+        "direct_runtime_execute": provenance.direct_runtime_execute,
+        "durable_owner_future_public_execute": (provenance.durable_owner_future_public_execute),
+        "function_acl": provenance.function_acl,
+        "function_owner": provenance.function_owner,
+        "public_execute": provenance.public_execute,
+        "role_execute_sources": list(provenance.role_execute_sources),
+        "runtime_effective_execute": provenance.runtime_effective_execute,
+        "runtime_is_owner": provenance.runtime_is_owner,
+    }
+
+
 def _grant_missing_runtime_privileges(connection: Any, audit: RuntimePrivilegeAudit) -> None:
     missing = set(audit.missing_required)
     if "database:CONNECT" in missing:
@@ -1225,6 +1378,7 @@ def run_privilege_audit(
             raise IdentityMismatch("grant-repair connection identity is unexpected")
         connection_tls = _connection_uses_tls(connection)
         audit = read_exact_runtime_privileges(connection)
+        provenance = read_reject_function_provenance(connection)
         connection.rollback()
     return {
         "classification": BootstrapClassification.PASS_PRIVILEGE_AUDIT,
@@ -1235,6 +1389,7 @@ def run_privilege_audit(
         "principal_admin": False,
         "principal_owner": False,
         "read_only": True,
+        "reject_function_provenance": _function_provenance_evidence(provenance),
         "runtime_principal": RUNTIME_PRINCIPAL_NAME,
         "runtime_privileges": _runtime_privilege_evidence(audit),
         "token_acquired": True,
@@ -1272,6 +1427,16 @@ def run_privilege_repair(
                     f'REVOKE {DURABLE_OWNER_NAME} FROM "{GRANT_REPAIR_PRINCIPAL_NAME}"'
                 )
                 administrator_connection.commit()
+    with administrator_connection_factory() as administrator_connection:
+        membership_present = bool(
+            administrator_connection.execute(
+                "SELECT pg_has_role(%s, %s, 'MEMBER')",
+                (GRANT_REPAIR_PRINCIPAL_NAME, DURABLE_OWNER_NAME),
+            ).fetchone()[0]
+        )
+        administrator_connection.rollback()
+    if membership_present:
+        raise PrivilegeMismatch("temporary durable-owner membership remains")
     with connection_factory() as connection:
         after = read_exact_runtime_privileges(connection)
         connection.rollback()
@@ -1285,6 +1450,112 @@ def run_privilege_repair(
         "grants_restored": list(before.missing_required),
         "mode": "grant_only_missing",
         "owner_membership_removed": True,
+        "runtime_principal": RUNTIME_PRINCIPAL_NAME,
+        "runtime_privileges_after": _runtime_privilege_evidence(after),
+        "runtime_privileges_before": _runtime_privilege_evidence(before),
+        "token_acquired": True,
+        "token_memory_only": True,
+        "tls_required": True,
+    }
+
+
+def run_privilege_drift_repair(
+    config: JobConfig,
+    connection_factory: Callable[[], Any],
+    administrator_connection_factory: Callable[[], Any],
+) -> dict[str, Any]:
+    with administrator_connection_factory() as administrator_connection:
+        if _current_user(administrator_connection) != GRANT_REPAIR_PRINCIPAL_NAME:
+            raise IdentityMismatch("grant-repair connection identity is unexpected")
+        verify_grant_repair_administrator(administrator_connection, config)
+    known_excess = f"{REJECT_FUNCTION_SIGNATURE}:EXECUTE"
+    membership_granted = False
+    before: RuntimePrivilegeAudit
+    provenance_before: FunctionPrivilegeProvenance
+    try:
+        with connection_factory() as connection:
+            if _current_user(connection) != GRANT_REPAIR_PRINCIPAL_NAME:
+                raise IdentityMismatch("grant-repair connection identity is unexpected")
+            connection_tls = _connection_uses_tls(connection)
+            before = read_exact_runtime_privileges(connection)
+            provenance_before = read_reject_function_provenance(connection)
+            if before.prohibited_present != (known_excess,):
+                raise UnexpectedRuntimePrivilegeDrift(
+                    "runtime privilege excess differs from approved repair"
+                )
+            if (
+                provenance_before.classification != "PUBLIC_GRANT"
+                or provenance_before.direct_runtime_execute
+                or provenance_before.role_execute_sources
+                or provenance_before.runtime_is_owner
+            ):
+                raise UnexpectedRuntimePrivilegeDrift(
+                    "append-only function privilege source is unexpected"
+                )
+            if len(before.missing_required) != 28:
+                raise UnexpectedRuntimePrivilegeDrift(
+                    "missing runtime privilege set differs from approved repair"
+                )
+            connection.execute(f'GRANT {DURABLE_OWNER_NAME} TO "{GRANT_REPAIR_PRINCIPAL_NAME}"')
+            membership_granted = True
+            connection.execute(f"SET ROLE {DURABLE_OWNER_NAME}")
+            try:
+                connection.execute(
+                    f"REVOKE EXECUTE ON FUNCTION {REJECT_FUNCTION_SIGNATURE} FROM PUBLIC"
+                )
+                if provenance_before.durable_owner_future_public_execute:
+                    connection.execute(
+                        "ALTER DEFAULT PRIVILEGES "
+                        f"FOR ROLE {DURABLE_OWNER_NAME} "
+                        "REVOKE EXECUTE ON FUNCTIONS FROM PUBLIC"
+                    )
+            finally:
+                connection.execute("RESET ROLE")
+            _grant_missing_runtime_privileges(connection, before)
+            connection.commit()
+    finally:
+        if membership_granted:
+            with administrator_connection_factory() as administrator_connection:
+                administrator_connection.execute(
+                    f'REVOKE {DURABLE_OWNER_NAME} FROM "{GRANT_REPAIR_PRINCIPAL_NAME}"'
+                )
+                administrator_connection.commit()
+    with administrator_connection_factory() as administrator_connection:
+        membership_present = bool(
+            administrator_connection.execute(
+                "SELECT pg_has_role(%s, %s, 'MEMBER')",
+                (GRANT_REPAIR_PRINCIPAL_NAME, DURABLE_OWNER_NAME),
+            ).fetchone()[0]
+        )
+        administrator_connection.rollback()
+    if membership_present:
+        raise PrivilegeMismatch("temporary durable-owner membership remains")
+    with connection_factory() as connection:
+        after = read_exact_runtime_privileges(connection)
+        provenance_after = read_reject_function_provenance(connection)
+        connection.rollback()
+    if after.missing_required or after.prohibited_present:
+        raise PrivilegeMismatch("runtime privileges do not match the accepted final set")
+    if (
+        provenance_after.runtime_effective_execute
+        or provenance_after.public_execute
+        or provenance_after.durable_owner_future_public_execute
+    ):
+        raise PrivilegeMismatch("append-only function ACL repair is incomplete")
+    return {
+        "classification": BootstrapClassification.PASS_PRIVILEGE_DRIFT_REPAIR,
+        "connection_tls": connection_tls,
+        "database": DATABASE_NAME,
+        "event": "runtime_privilege_drift_repair",
+        "excess_repaired": [known_excess],
+        "future_public_function_default_hardened": (
+            provenance_before.durable_owner_future_public_execute
+        ),
+        "grants_restored": list(before.missing_required),
+        "mode": "known_public_acl_and_grant_only_missing",
+        "owner_membership_removed": True,
+        "reject_function_provenance_after": _function_provenance_evidence(provenance_after),
+        "reject_function_provenance_before": _function_provenance_evidence(provenance_before),
         "runtime_principal": RUNTIME_PRINCIPAL_NAME,
         "runtime_privileges_after": _runtime_privilege_evidence(after),
         "runtime_privileges_before": _runtime_privilege_evidence(before),
@@ -1866,6 +2137,7 @@ def main() -> int:
             "ownership-remediate",
             "privilege-audit",
             "privilege-repair",
+            "privilege-drift-repair",
             "runtime-probe",
         ),
     )
@@ -1920,6 +2192,12 @@ def main() -> int:
                 )
             elif arguments.mode == "privilege-repair":
                 evidence = run_privilege_repair(
+                    config,
+                    factory,
+                    factory.administrator_connection,
+                )
+            elif arguments.mode == "privilege-drift-repair":
+                evidence = run_privilege_drift_repair(
                     config,
                     factory,
                     factory.administrator_connection,

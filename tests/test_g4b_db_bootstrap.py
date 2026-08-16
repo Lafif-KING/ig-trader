@@ -40,6 +40,7 @@ from src.ig_trader.db_bootstrap import (
     load_migration_sources,
     plan_migrations,
     read_exact_runtime_privileges,
+    read_reject_function_provenance,
     schema_inspection_evidence,
     validate_durable_owner,
     validate_execution_nonce,
@@ -75,7 +76,11 @@ def _ledger(*versions: str) -> dict[str, str]:
 def _environment(mode: str) -> dict[str, str]:
     bootstrap = mode in {"bootstrap-admin", "schema-inspect"}
     remediation = mode in {"ownership-inspect", "ownership-remediate"}
-    grant_repair = mode in {"privilege-audit", "privilege-repair"}
+    grant_repair = mode in {
+        "privilege-audit",
+        "privilege-repair",
+        "privilege-drift-repair",
+    }
     values = {
         "AZURE_CLIENT_ID": CLIENT_ID,
         "JOB_IDENTITY_NAME": (
@@ -293,6 +298,16 @@ def test_ownership_repair_requires_distinct_finite_remediation_identity() -> Non
 
 def test_privilege_repair_requires_distinct_finite_admin_identity() -> None:
     config = JobConfig.from_environment("privilege-repair", _environment("privilege-repair"))
+
+    assert config.database_user == GRANT_REPAIR_PRINCIPAL_NAME
+    assert config.runtime_identity_object_id == RUNTIME_OBJECT_ID
+    assert config.orphan_identity_object_id is None
+
+
+def test_privilege_drift_repair_requires_distinct_finite_admin_identity() -> None:
+    config = JobConfig.from_environment(
+        "privilege-drift-repair", _environment("privilege-drift-repair")
+    )
 
     assert config.database_user == GRANT_REPAIR_PRINCIPAL_NAME
     assert config.runtime_identity_object_id == RUNTIME_OBJECT_ID
@@ -593,3 +608,9 @@ def test_real_postgresql_blank_bootstrap_applies_and_verifies_both_migrations() 
         assert "trading:USAGE" in audit.missing_required
         assert "trading.worker_leases:SELECT" in audit.missing_required
         assert any("reject_append_only_mutation" in item for item in audit.prohibited_present)
+        provenance = read_reject_function_provenance(connection)
+        assert provenance.classification == "PUBLIC_GRANT"
+        assert provenance.public_execute is True
+        assert provenance.direct_runtime_execute is False
+        assert provenance.role_execute_sources == ()
+        assert provenance.runtime_is_owner is False
