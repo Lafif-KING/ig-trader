@@ -186,7 +186,7 @@ CREATE OR REPLACE FUNCTION trading.assert_execution_fence(
 )
 RETURNS void
 LANGUAGE plpgsql
-SECURITY INVOKER
+SECURITY DEFINER
 SET search_path = pg_catalog, trading
 AS $$
 BEGIN
@@ -232,7 +232,7 @@ FROM PUBLIC;
 CREATE OR REPLACE FUNCTION trading.require_current_execution_fence()
 RETURNS trigger
 LANGUAGE plpgsql
-SECURITY INVOKER
+SECURITY DEFINER
 SET search_path = pg_catalog, trading
 AS $$
 DECLARE

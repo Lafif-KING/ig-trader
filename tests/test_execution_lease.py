@@ -358,6 +358,7 @@ def test_migration_extends_the_existing_worker_lease_and_fences_state_tables() -
     assert "release_execution_lease" in migration
     assert "assert_execution_fence" in migration
     assert "require_current_execution_fence" in migration
+    assert migration.count("SECURITY DEFINER") == 5
     for table in (
         "execution_cycle_claims",
         "trade_intents",

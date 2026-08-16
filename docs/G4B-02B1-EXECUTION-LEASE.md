@@ -51,6 +51,11 @@ caller's transaction. Migration 002 also adds a defensive trigger to each
 cloud execution-state table. A write without a current fence, or with a stale
 fence, is rejected by PostgreSQL.
 
+Lease mutation and fence-row locking are exposed only through functions owned
+by the migration authority with fixed `pg_catalog, trading` search paths.
+Execute is revoked from `PUBLIC` and granted explicitly to the future runtime
+role. The runtime role receives no raw write privilege on `worker_leases`.
+
 The protected scopes are:
 
 - cycle ownership;
