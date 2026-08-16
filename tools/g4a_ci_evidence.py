@@ -79,6 +79,8 @@ def assemble(directory: Path) -> dict[str, Any]:
         "image": image,
         "quality": {
             "format": "pass",
+            "locked_dependencies": "pass",
+            "pip_check": "pass",
             "pre_commit": "pass",
             "ruff": "pass",
         },

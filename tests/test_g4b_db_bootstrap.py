@@ -313,6 +313,7 @@ def test_ci_has_dedicated_bootstrap_postgresql_image_and_evidence_gates() -> Non
 
     assert "tests-g4b-db-bootstrap.xml" in workflow
     assert "tests-g4b-db-bootstrap-postgres.xml" in workflow
+    assert "poetry run pip check" in workflow
     assert "Dockerfile.db-bootstrap" in workflow
     assert "tools/g4b_db_bootstrap_image_inspect.py" in workflow
     assert "--network none" in workflow

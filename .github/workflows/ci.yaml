@@ -52,6 +52,7 @@ jobs:
           mkdir -p artifacts/ci
           poetry check --lock
           poetry sync --no-interaction --no-ansi
+          poetry run pip check
 
       - name: Collect and run complete clean suite
         run: |
