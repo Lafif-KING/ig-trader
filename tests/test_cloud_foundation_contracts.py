@@ -61,6 +61,8 @@ def test_ci_contains_every_required_gate_and_sha_pins_actions() -> None:
     assert "tests/test_cloud_runtime.py" in workflow
     assert "tests/test_execution_lease.py" in workflow
     assert "tests-g4b-lease.xml" in workflow
+    assert 'RUN_POSTGRES_INTEGRATION: "1"' in workflow
+    assert "timeout --signal=TERM --kill-after=10s 120s" in workflow
     assert "postgres:16.10-bookworm@sha256:" in workflow
     assert "POSTGRES_HOST_AUTH_METHOD: trust" in workflow
     assert "order_endpoint_call_count" in _read("tools/g4a_container_smoke.py")

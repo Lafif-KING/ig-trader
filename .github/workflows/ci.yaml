@@ -92,8 +92,10 @@ jobs:
             tests/test_g4b_ops_monitoring.py
 
       - name: G4B execution lease and fencing focused tests
+        env:
+          RUN_POSTGRES_INTEGRATION: "1"
         run: |
-          poetry run pytest -q \
+          timeout --signal=TERM --kill-after=10s 120s poetry run pytest -q \
             --junitxml=artifacts/ci/tests-g4b-lease.xml \
             tests/test_execution_lease.py
 

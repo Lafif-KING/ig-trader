@@ -33,6 +33,7 @@ from src.ig_trader.execution_lease import (
 
 ROOT = Path(__file__).resolve().parents[1]
 POSTGRES_DSN_ENV = "TEST_POSTGRES_DSN"
+POSTGRES_INTEGRATION_ENV = "RUN_POSTGRES_INTEGRATION"
 POSTGRES_TEST_ROLE = "g4b02b1_runtime_test"
 
 
@@ -476,6 +477,8 @@ def _stop_process(process: Any) -> None:
 
 
 def _required_postgres_dsn() -> str:
+    if os.environ.get(POSTGRES_INTEGRATION_ENV) != "1":
+        pytest.skip("real PostgreSQL runs only in the dedicated bounded CI gate")
     dsn = os.environ.get(POSTGRES_DSN_ENV, "").strip()
     if not dsn:
         pytest.skip("real PostgreSQL is required; remote CI provides PostgreSQL 16")
