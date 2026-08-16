@@ -1,0 +1,13 @@
+using './dev-shadow-c2.bicep'
+
+param location = 'francecentral'
+param containerRegistryName = 'igtrdevfrcbzkxc6c6acr'
+param executionIdentityName = 'igtrdevfrc-execution-identity'
+param virtualNetworkName = 'igtrdevfrc-vnet'
+param containerSubnetName = 'container-apps'
+param logAnalyticsWorkspaceName = 'igtrdevfrc-logs'
+param containerEnvironmentName = 'igtrdevfrc-aca-env'
+param environmentDiagnosticSettingName = 'igtrdevfrc-environment-logs'
+param containerAppName = 'igtrdevfrc-execution-worker'
+param containerImage = 'igtrdevfrcbzkxc6c6acr.azurecr.io/ig-trader@sha256:cf90c62dbe81166414a864435bff8de2ab2adfd566dd22793571eb9d8accaf45'
+param imageCommitSha = '903dff5d07af03da593d3afff8b53c427704bd21'

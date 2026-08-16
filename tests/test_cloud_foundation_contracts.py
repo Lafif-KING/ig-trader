@@ -49,6 +49,7 @@ def test_ci_contains_every_required_gate_and_sha_pins_actions() -> None:
     assert "az bicep install --version v0.45.15" in workflow
     assert "az bicep build --file infra/azure/app.bicep" in workflow
     assert "az bicep build --file infra/azure/dev-shadow-app.bicep" in workflow
+    assert "az bicep build --file infra/azure/dev-shadow-c2.bicep" in workflow
     assert "az bicep build --file infra/azure/dev-shadow-foundation.bicep" in workflow
     assert "az bicep build-params" in workflow
     assert "pre-commit run --all-files" in workflow
