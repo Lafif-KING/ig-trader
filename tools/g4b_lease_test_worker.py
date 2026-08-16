@@ -10,7 +10,7 @@ from pathlib import Path
 
 import psycopg
 
-from src.ig_trader.execution_lease import (
+from ig_trader.execution_lease import (
     EXECUTION_LEASE_NAME,
     LeaseError,
     PostgresExecutionLeaseStore,
