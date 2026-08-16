@@ -15,6 +15,7 @@ from src.ig_trader.db_bootstrap import (
     BOOTSTRAP_PRINCIPAL_NAME,
     DURABLE_OWNER_NAME,
     EXPECTED_MIGRATION_HASHES,
+    GRANT_REPAIR_PRINCIPAL_NAME,
     MIGRATION_001,
     MIGRATION_002,
     REMEDIATION_PRINCIPAL_NAME,
@@ -38,6 +39,7 @@ from src.ig_trader.db_bootstrap import (
     inspect_schema,
     load_migration_sources,
     plan_migrations,
+    read_exact_runtime_privileges,
     schema_inspection_evidence,
     validate_durable_owner,
     validate_execution_nonce,
@@ -73,6 +75,7 @@ def _ledger(*versions: str) -> dict[str, str]:
 def _environment(mode: str) -> dict[str, str]:
     bootstrap = mode in {"bootstrap-admin", "schema-inspect"}
     remediation = mode in {"ownership-inspect", "ownership-remediate"}
+    grant_repair = mode in {"privilege-audit", "privilege-repair"}
     values = {
         "AZURE_CLIENT_ID": CLIENT_ID,
         "JOB_IDENTITY_NAME": (
@@ -80,6 +83,8 @@ def _environment(mode: str) -> dict[str, str]:
             if bootstrap
             else REMEDIATION_PRINCIPAL_NAME
             if remediation
+            else GRANT_REPAIR_PRINCIPAL_NAME
+            if grant_repair
             else RUNTIME_PRINCIPAL_NAME
         ),
         "JOB_UAMI_OBJECT_ID": (
@@ -87,12 +92,14 @@ def _environment(mode: str) -> dict[str, str]:
             if bootstrap
             else REMEDIATION_OBJECT_ID
             if remediation
+            else REMEDIATION_OBJECT_ID
+            if grant_repair
             else RUNTIME_OBJECT_ID
         ),
         "POSTGRES_DATABASE": "ig_trader",
         "POSTGRES_HOST": "example.postgres.database.azure.com",
     }
-    if bootstrap or remediation:
+    if bootstrap or remediation or grant_repair:
         values["RUNTIME_UAMI_OBJECT_ID"] = RUNTIME_OBJECT_ID
     if remediation:
         values["ORPHAN_UAMI_OBJECT_ID"] = BOOTSTRAP_OBJECT_ID
@@ -284,6 +291,14 @@ def test_ownership_repair_requires_distinct_finite_remediation_identity() -> Non
     assert config.orphan_identity_object_id == BOOTSTRAP_OBJECT_ID
 
 
+def test_privilege_repair_requires_distinct_finite_admin_identity() -> None:
+    config = JobConfig.from_environment("privilege-repair", _environment("privilege-repair"))
+
+    assert config.database_user == GRANT_REPAIR_PRINCIPAL_NAME
+    assert config.runtime_identity_object_id == RUNTIME_OBJECT_ID
+    assert config.orphan_identity_object_id is None
+
+
 def test_durable_owner_must_be_nologin_and_non_admin() -> None:
     safe = RoleRecord(
         role_name=DURABLE_OWNER_NAME,
@@ -450,6 +465,9 @@ def test_cloud_bootstrap_source_has_no_sqlite_fallback_or_broker_import() -> Non
     assert '"observability-canary"' in source
     assert '"ownership-inspect"' in source
     assert '"ownership-remediate"' in source
+    assert '"privilege-audit"' in source
+    assert '"privilege-repair"' in source
+    assert "has_table_privilege(%s, %s::oid, %s)" in source
     assert "REASSIGN OWNED BY" in source
     assert 'REVOKE "{RUNTIME_PRINCIPAL_NAME}"' in source
     assert "DROP OWNED" not in source
@@ -553,6 +571,14 @@ def test_real_postgresql_blank_bootstrap_applies_and_verifies_both_migrations() 
 
     with psycopg.connect(dsn, autocommit=True) as admin:
         admin.execute("DROP SCHEMA IF EXISTS trading CASCADE")
+        admin.execute(
+            "DO $$ BEGIN CREATE ROLE azure_pg_admin NOLOGIN; "
+            "EXCEPTION WHEN duplicate_object THEN NULL; END $$"
+        )
+        admin.execute(
+            f'DO $$ BEGIN CREATE ROLE "{RUNTIME_PRINCIPAL_NAME}" LOGIN; '
+            "EXCEPTION WHEN duplicate_object THEN NULL; END $$"
+        )
     with psycopg.connect(dsn) as connection:
         sources = load_migration_sources(MIGRATION_ROOT)
         applied = apply_required_migrations(connection, sources, "ephemeral-ci-bootstrap")
@@ -563,3 +589,7 @@ def test_real_postgresql_blank_bootstrap_applies_and_verifies_both_migrations() 
         assert len(ownership.relation_owners) == 11
         assert len(ownership.function_owners) == 6
         assert dict(ownership.migration_ledger) == EXPECTED_MIGRATION_HASHES
+        audit = read_exact_runtime_privileges(connection)
+        assert "trading:USAGE" in audit.missing_required
+        assert "trading.worker_leases:SELECT" in audit.missing_required
+        assert any("reject_append_only_mutation" in item for item in audit.prohibited_present)

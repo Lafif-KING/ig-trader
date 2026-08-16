@@ -29,6 +29,7 @@ from ig_trader.execution_lease import (
 RUNTIME_PRINCIPAL_NAME = "igtrdevfrc-execution-identity"
 BOOTSTRAP_PRINCIPAL_NAME = "igtrdevfrc-db-bootstrap-identity"
 REMEDIATION_PRINCIPAL_NAME = "igtrdevfrc-db-remediation-identity"
+GRANT_REPAIR_PRINCIPAL_NAME = "igtrdevfrc-db-grant-repair-identity"
 DURABLE_OWNER_NAME = "ig_trader_schema_owner"
 DATABASE_NAME = "ig_trader"
 
@@ -61,6 +62,8 @@ class BootstrapClassification(StrEnum):
     PASS_RUNTIME_PROBE = "PASS_RUNTIME_PROBE"
     PASS_OWNERSHIP_INSPECTION = "PASS_OWNERSHIP_INSPECTION"
     PASS_OWNERSHIP_REMEDIATION = "PASS_OWNERSHIP_REMEDIATION"
+    PASS_PRIVILEGE_AUDIT = "PASS_PRIVILEGE_AUDIT"
+    PASS_PRIVILEGE_REPAIR = "PASS_PRIVILEGE_REPAIR"
     DATABASE_SCHEMA_DRIFT = "DATABASE_SCHEMA_DRIFT"
     IDENTITY_MISMATCH = "IDENTITY_MISMATCH"
     PRIVILEGE_MISMATCH = "PRIVILEGE_MISMATCH"
@@ -92,6 +95,10 @@ class DatabaseUnavailable(BootstrapError):
 
 class OwnershipTransferFailure(BootstrapError):
     classification = "OWNERSHIP_TRANSFER_FAILURE"
+
+
+class RuntimePrivilegeDrift(BootstrapError):
+    classification = "RUNTIME_DB_PRIVILEGE_DRIFT"
 
 
 class MigrationState(StrEnum):
@@ -253,6 +260,21 @@ class OwnershipInventory:
 
 
 @dataclass(frozen=True)
+class RuntimePrivilegeAudit:
+    database_connect: bool
+    database_create: bool
+    schema_usage: bool
+    schema_create: bool
+    table_privileges: tuple[tuple[str, tuple[str, ...]], ...]
+    sequence_privileges: tuple[tuple[str, tuple[str, ...]], ...]
+    function_execute: tuple[str, ...]
+    role_memberships: tuple[str, ...]
+    owned_object_count: int
+    missing_required: tuple[str, ...]
+    prohibited_present: tuple[str, ...]
+
+
+@dataclass(frozen=True)
 class PrivilegeSnapshot:
     database_connect: bool
     database_create: bool
@@ -318,6 +340,17 @@ class JobConfig:
                 "ORPHAN_UAMI_OBJECT_ID",
             )
             database_user = REMEDIATION_PRINCIPAL_NAME
+        elif mode in {"privilege-audit", "privilege-repair"}:
+            if identity_name != GRANT_REPAIR_PRINCIPAL_NAME:
+                raise IdentityMismatch("grant-repair identity is required")
+            runtime_object_id = _uuid(
+                environment.get("RUNTIME_UAMI_OBJECT_ID", ""),
+                "RUNTIME_UAMI_OBJECT_ID",
+            )
+            if runtime_object_id == identity_object_id:
+                raise IdentityMismatch("grant-repair and runtime identities must be distinct")
+            orphan_object_id = None
+            database_user = GRANT_REPAIR_PRINCIPAL_NAME
         elif mode == "runtime-probe":
             if identity_name != RUNTIME_PRINCIPAL_NAME:
                 raise IdentityMismatch("runtime identity is required")
@@ -900,10 +933,365 @@ _FUNCTION_SIGNATURES = (
 )
 
 
+def read_exact_runtime_privileges(connection: Any) -> RuntimePrivilegeAudit:
+    """Audit effective privileges by object OID, even when schema USAGE is absent."""
+
+    role = RUNTIME_PRINCIPAL_NAME
+    record = read_role_record(connection, role)
+    if record is None:
+        raise IdentityMismatch("runtime PostgreSQL role is absent")
+    database_connect, database_create = connection.execute(
+        "SELECT has_database_privilege(%s, current_database(), 'CONNECT'), "
+        "has_database_privilege(%s, current_database(), 'CREATE')",
+        (role, role),
+    ).fetchone()
+    schema_row = connection.execute(
+        """
+        SELECT has_schema_privilege(%s, oid, 'USAGE'),
+               has_schema_privilege(%s, oid, 'CREATE')
+        FROM pg_namespace
+        WHERE nspname = 'trading'
+        """,
+        (role, role),
+    ).fetchone()
+    if schema_row is None:
+        raise DatabaseSchemaDrift("trading schema is absent")
+    schema_usage, schema_create = schema_row
+    table_rows = connection.execute(
+        """
+        SELECT c.relname, c.oid
+        FROM pg_class c
+        JOIN pg_namespace n ON n.oid = c.relnamespace
+        WHERE n.nspname = 'trading' AND c.relkind IN ('r', 'p')
+        ORDER BY c.relname
+        """
+    ).fetchall()
+    table_oids = {str(row[0]): int(row[1]) for row in table_rows}
+    if set(table_oids) != set(_TABLE_PRIVILEGES):
+        raise DatabaseSchemaDrift("runtime table footprint differs from review")
+    table_privileges: list[tuple[str, tuple[str, ...]]] = []
+    missing: list[str] = []
+    prohibited: list[str] = []
+    for table, oid in sorted(table_oids.items()):
+        actual: list[str] = []
+        required = _TABLE_PRIVILEGES[table]
+        for privilege in ("SELECT", "INSERT", "UPDATE", "DELETE"):
+            present = bool(
+                connection.execute(
+                    "SELECT has_table_privilege(%s, %s::oid, %s)",
+                    (role, oid, privilege),
+                ).fetchone()[0]
+            )
+            label = f"trading.{table}:{privilege}"
+            if present:
+                actual.append(privilege)
+            if privilege in required and not present:
+                missing.append(label)
+            if privilege not in required and present:
+                prohibited.append(label)
+        table_privileges.append((table, tuple(actual)))
+    sequence_rows = connection.execute(
+        """
+        SELECT c.relname, c.oid
+        FROM pg_class c
+        JOIN pg_namespace n ON n.oid = c.relnamespace
+        WHERE n.nspname = 'trading' AND c.relkind = 'S'
+        ORDER BY c.relname
+        """
+    ).fetchall()
+    required_sequence = "lifecycle_events_sequence_seq"
+    sequence_privileges: list[tuple[str, tuple[str, ...]]] = []
+    for row in sequence_rows:
+        name, oid = str(row[0]), int(row[1])
+        actual = []
+        for privilege in ("USAGE", "SELECT", "UPDATE"):
+            present = bool(
+                connection.execute(
+                    "SELECT has_sequence_privilege(%s, %s::oid, %s)",
+                    (role, oid, privilege),
+                ).fetchone()[0]
+            )
+            if present:
+                actual.append(privilege)
+            label = f"trading.{name}:{privilege}"
+            if name == required_sequence and privilege in {"USAGE", "SELECT"} and not present:
+                missing.append(label)
+            if present and (name != required_sequence or privilege == "UPDATE"):
+                prohibited.append(label)
+        sequence_privileges.append((name, tuple(actual)))
+    approved_function_oids: set[int] = set()
+    function_execute: list[str] = []
+    for signature in _FUNCTION_SIGNATURES:
+        row = connection.execute("SELECT to_regprocedure(%s)::oid", (signature,)).fetchone()
+        if row is None or row[0] is None:
+            raise DatabaseSchemaDrift("approved lease function is absent")
+        oid = int(row[0])
+        approved_function_oids.add(oid)
+        if connection.execute(
+            "SELECT has_function_privilege(%s, %s::oid, 'EXECUTE')",
+            (role, oid),
+        ).fetchone()[0]:
+            function_execute.append(signature)
+        else:
+            missing.append(f"{signature}:EXECUTE")
+    for row in connection.execute(
+        """
+        SELECT p.oid, p.proname, pg_get_function_identity_arguments(p.oid)
+        FROM pg_proc p
+        JOIN pg_namespace n ON n.oid = p.pronamespace
+        WHERE n.nspname = 'trading'
+        ORDER BY p.proname, pg_get_function_identity_arguments(p.oid)
+        """
+    ).fetchall():
+        oid = int(row[0])
+        if oid in approved_function_oids:
+            continue
+        if connection.execute(
+            "SELECT has_function_privilege(%s, %s::oid, 'EXECUTE')",
+            (role, oid),
+        ).fetchone()[0]:
+            prohibited.append(f"trading.{row[1]}({row[2]}):EXECUTE")
+    memberships = tuple(
+        str(row[0])
+        for row in connection.execute(
+            """
+            SELECT parent.rolname
+            FROM pg_auth_members m
+            JOIN pg_roles parent ON parent.oid = m.roleid
+            JOIN pg_roles member ON member.oid = m.member
+            WHERE member.rolname = %s
+            ORDER BY parent.rolname
+            """,
+            (role,),
+        ).fetchall()
+    )
+    owned_count = int(
+        connection.execute(
+            """
+            SELECT
+                (SELECT count(*) FROM pg_database
+                 WHERE datdba = (SELECT oid FROM pg_roles WHERE rolname = %s))
+              + (SELECT count(*) FROM pg_namespace
+                 WHERE nspowner = (SELECT oid FROM pg_roles WHERE rolname = %s))
+              + (SELECT count(*) FROM pg_class c JOIN pg_namespace n
+                    ON n.oid = c.relnamespace
+                 WHERE n.nspname = 'trading'
+                   AND c.relowner = (SELECT oid FROM pg_roles WHERE rolname = %s))
+              + (SELECT count(*) FROM pg_proc p JOIN pg_namespace n
+                    ON n.oid = p.pronamespace
+                 WHERE n.nspname = 'trading'
+                   AND p.proowner = (SELECT oid FROM pg_roles WHERE rolname = %s))
+            """,
+            (role, role, role, role),
+        ).fetchone()[0]
+    )
+    if not database_connect:
+        missing.append("database:CONNECT")
+    if not schema_usage:
+        missing.append("trading:USAGE")
+    if database_create:
+        prohibited.append("database:CREATE")
+    if schema_create:
+        prohibited.append("trading:CREATE")
+    if record.is_superuser:
+        prohibited.append("role:SUPERUSER")
+    if record.can_create_database:
+        prohibited.append("role:CREATEDB")
+    if record.can_create_role:
+        prohibited.append("role:CREATEROLE")
+    if record.azure_pg_admin_member:
+        prohibited.append("role:azure_pg_admin")
+    if memberships:
+        prohibited.extend(f"role-membership:{name}" for name in memberships)
+    if owned_count:
+        prohibited.append(f"owned-objects:{owned_count}")
+    return RuntimePrivilegeAudit(
+        database_connect=bool(database_connect),
+        database_create=bool(database_create),
+        schema_usage=bool(schema_usage),
+        schema_create=bool(schema_create),
+        table_privileges=tuple(table_privileges),
+        sequence_privileges=tuple(sequence_privileges),
+        function_execute=tuple(function_execute),
+        role_memberships=memberships,
+        owned_object_count=owned_count,
+        missing_required=tuple(sorted(missing)),
+        prohibited_present=tuple(sorted(prohibited)),
+    )
+
+
 def apply_runtime_grants(connection: Any) -> None:
     for statement in GRANT_STATEMENTS:
         connection.execute(statement)
     connection.commit()
+
+
+def verify_grant_repair_administrator(connection: Any, config: JobConfig) -> None:
+    repair = read_entra_principal(connection, GRANT_REPAIR_PRINCIPAL_NAME)
+    runtime = read_entra_principal(connection, RUNTIME_PRINCIPAL_NAME)
+    if (
+        repair is None
+        or repair.object_id != config.job_identity_object_id.casefold()
+        or repair.principal_type != "service"
+        or not repair.is_admin
+        or not repair.azure_pg_admin_member
+    ):
+        raise IdentityMismatch("temporary grant-repair identity is not the Entra admin")
+    if runtime is None or config.runtime_identity_object_id is None:
+        raise IdentityMismatch("runtime database principal is absent")
+    validate_runtime_principal(runtime, config.runtime_identity_object_id)
+    validate_durable_owner(read_role_record(connection, DURABLE_OWNER_NAME))
+    if read_entra_principal(connection, DURABLE_OWNER_NAME) is not None:
+        raise IdentityMismatch("durable owner must not have an Entra mapping")
+
+
+def _runtime_privilege_evidence(audit: RuntimePrivilegeAudit) -> dict[str, Any]:
+    return {
+        "actual": {
+            "database_connect": audit.database_connect,
+            "database_create": audit.database_create,
+            "function_execute": list(audit.function_execute),
+            "owned_object_count": audit.owned_object_count,
+            "role_memberships": list(audit.role_memberships),
+            "schema_create": audit.schema_create,
+            "schema_usage": audit.schema_usage,
+            "sequence_privileges": {
+                name: list(privileges) for name, privileges in audit.sequence_privileges
+            },
+            "table_privileges": {
+                name: list(privileges) for name, privileges in audit.table_privileges
+            },
+        },
+        "expected": {
+            "database": ["CONNECT"],
+            "functions": [f"{signature}:EXECUTE" for signature in _FUNCTION_SIGNATURES],
+            "role_memberships": [],
+            "schema": ["USAGE"],
+            "sequence_privileges": {"lifecycle_events_sequence_seq": ["SELECT", "USAGE"]},
+            "table_privileges": {
+                name: sorted(privileges) for name, privileges in _TABLE_PRIVILEGES.items()
+            },
+        },
+        "excess": list(audit.prohibited_present),
+        "missing": list(audit.missing_required),
+    }
+
+
+def _grant_missing_runtime_privileges(connection: Any, audit: RuntimePrivilegeAudit) -> None:
+    missing = set(audit.missing_required)
+    if "database:CONNECT" in missing:
+        connection.execute(f"GRANT CONNECT ON DATABASE {DATABASE_NAME} TO {_ROLE}")
+        missing.remove("database:CONNECT")
+    connection.execute(f'GRANT {DURABLE_OWNER_NAME} TO "{GRANT_REPAIR_PRINCIPAL_NAME}"')
+    connection.execute(f"SET ROLE {DURABLE_OWNER_NAME}")
+    try:
+        if "trading:USAGE" in missing:
+            connection.execute(f"GRANT USAGE ON SCHEMA trading TO {_ROLE}")
+            missing.remove("trading:USAGE")
+        for table, required in _TABLE_PRIVILEGES.items():
+            for privilege in sorted(required):
+                label = f"trading.{table}:{privilege}"
+                if label in missing:
+                    connection.execute(f"GRANT {privilege} ON TABLE trading.{table} TO {_ROLE}")
+                    missing.remove(label)
+        sequence = "lifecycle_events_sequence_seq"
+        for privilege in ("SELECT", "USAGE"):
+            label = f"trading.{sequence}:{privilege}"
+            if label in missing:
+                connection.execute(f"GRANT {privilege} ON SEQUENCE trading.{sequence} TO {_ROLE}")
+                missing.remove(label)
+        for signature in _FUNCTION_SIGNATURES:
+            label = f"{signature}:EXECUTE"
+            if label in missing:
+                connection.execute(f"GRANT EXECUTE ON FUNCTION {signature} TO {_ROLE}")
+                missing.remove(label)
+    finally:
+        connection.execute("RESET ROLE")
+    if missing:
+        raise PrivilegeMismatch("missing privilege set contains an unsupported grant")
+
+
+def run_privilege_audit(
+    config: JobConfig,
+    connection_factory: Callable[[], Any],
+    administrator_connection_factory: Callable[[], Any],
+) -> dict[str, Any]:
+    with administrator_connection_factory() as administrator_connection:
+        if _current_user(administrator_connection) != GRANT_REPAIR_PRINCIPAL_NAME:
+            raise IdentityMismatch("grant-repair connection identity is unexpected")
+        verify_grant_repair_administrator(administrator_connection, config)
+    with connection_factory() as connection:
+        if _current_user(connection) != GRANT_REPAIR_PRINCIPAL_NAME:
+            raise IdentityMismatch("grant-repair connection identity is unexpected")
+        connection_tls = _connection_uses_tls(connection)
+        audit = read_exact_runtime_privileges(connection)
+        connection.rollback()
+    return {
+        "classification": BootstrapClassification.PASS_PRIVILEGE_AUDIT,
+        "connection_tls": connection_tls,
+        "database": DATABASE_NAME,
+        "event": "runtime_privilege_audit",
+        "mode": "read_only",
+        "principal_admin": False,
+        "principal_owner": False,
+        "read_only": True,
+        "runtime_principal": RUNTIME_PRINCIPAL_NAME,
+        "runtime_privileges": _runtime_privilege_evidence(audit),
+        "token_acquired": True,
+        "token_memory_only": True,
+        "tls_required": True,
+    }
+
+
+def run_privilege_repair(
+    config: JobConfig,
+    connection_factory: Callable[[], Any],
+    administrator_connection_factory: Callable[[], Any],
+) -> dict[str, Any]:
+    with administrator_connection_factory() as administrator_connection:
+        if _current_user(administrator_connection) != GRANT_REPAIR_PRINCIPAL_NAME:
+            raise IdentityMismatch("grant-repair connection identity is unexpected")
+        verify_grant_repair_administrator(administrator_connection, config)
+    before: RuntimePrivilegeAudit
+    membership_granted = False
+    try:
+        with connection_factory() as connection:
+            if _current_user(connection) != GRANT_REPAIR_PRINCIPAL_NAME:
+                raise IdentityMismatch("grant-repair connection identity is unexpected")
+            connection_tls = _connection_uses_tls(connection)
+            before = read_exact_runtime_privileges(connection)
+            if before.prohibited_present:
+                raise RuntimePrivilegeDrift("runtime role has prohibited effective privileges")
+            _grant_missing_runtime_privileges(connection, before)
+            connection.commit()
+            membership_granted = True
+    finally:
+        if membership_granted:
+            with administrator_connection_factory() as administrator_connection:
+                administrator_connection.execute(
+                    f'REVOKE {DURABLE_OWNER_NAME} FROM "{GRANT_REPAIR_PRINCIPAL_NAME}"'
+                )
+                administrator_connection.commit()
+    with connection_factory() as connection:
+        after = read_exact_runtime_privileges(connection)
+        connection.rollback()
+    if after.missing_required or after.prohibited_present:
+        raise PrivilegeMismatch("runtime privileges do not match the accepted final set")
+    return {
+        "classification": BootstrapClassification.PASS_PRIVILEGE_REPAIR,
+        "connection_tls": connection_tls,
+        "database": DATABASE_NAME,
+        "event": "runtime_privilege_repair",
+        "grants_restored": list(before.missing_required),
+        "mode": "grant_only_missing",
+        "owner_membership_removed": True,
+        "runtime_principal": RUNTIME_PRINCIPAL_NAME,
+        "runtime_privileges_after": _runtime_privilege_evidence(after),
+        "runtime_privileges_before": _runtime_privilege_evidence(before),
+        "token_acquired": True,
+        "token_memory_only": True,
+        "tls_required": True,
+    }
 
 
 def read_runtime_privileges(connection: Any) -> PrivilegeSnapshot:
@@ -1351,7 +1739,12 @@ def run_runtime_probe(
         if current_user != RUNTIME_PRINCIPAL_NAME:
             raise IdentityMismatch("runtime connection identity is unexpected")
         connection_tls = _connection_uses_tls(connection)
-        privileges = read_runtime_privileges(connection)
+        try:
+            privileges = read_runtime_privileges(connection)
+        except Exception as error:
+            if error.__class__.__module__.startswith("psycopg"):
+                raise PrivilegeMismatch("runtime privilege inspection failed") from None
+            raise
         validate_runtime_privileges(privileges)
 
     instance = _probe_instance_id(os.environ)
@@ -1471,6 +1864,8 @@ def main() -> int:
             "bootstrap-admin",
             "ownership-inspect",
             "ownership-remediate",
+            "privilege-audit",
+            "privilege-repair",
             "runtime-probe",
         ),
     )
@@ -1516,6 +1911,18 @@ def main() -> int:
                     factory,
                     factory.administrator_connection,
                     arguments.migration_root,
+                )
+            elif arguments.mode == "privilege-audit":
+                evidence = run_privilege_audit(
+                    config,
+                    factory,
+                    factory.administrator_connection,
+                )
+            elif arguments.mode == "privilege-repair":
+                evidence = run_privilege_repair(
+                    config,
+                    factory,
+                    factory.administrator_connection,
                 )
             else:
                 evidence = run_runtime_probe(config, factory)
