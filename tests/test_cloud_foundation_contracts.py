@@ -33,6 +33,8 @@ def test_ci_contains_every_required_gate_and_sha_pins_actions() -> None:
         "- name: G2 focused tests",
         "- name: G3A focused tests",
         "- name: G4A focused tests",
+        "- name: G4B operations focused tests",
+        "- name: G4B execution lease and fencing focused tests",
         "- name: Ruff",
         "- name: Formatting",
         "- name: Repository pre-commit hooks",
@@ -57,7 +59,14 @@ def test_ci_contains_every_required_gate_and_sha_pins_actions() -> None:
     assert "tests/test_g2_offline_paper.py" in workflow
     assert "tests/test_g3a_market_data.py" in workflow
     assert "tests/test_cloud_runtime.py" in workflow
+    assert "tests/test_execution_lease.py" in workflow
+    assert "tests-g4b-lease.xml" in workflow
+    assert "postgres:16.10-bookworm@sha256:" in workflow
+    assert "POSTGRES_HOST_AUTH_METHOD: trust" in workflow
     assert "order_endpoint_call_count" in _read("tools/g4a_container_smoke.py")
+    assert "NO_EXECUTION lease or fencing metadata is unsafe" in _read(
+        "tools/g4a_container_smoke.py"
+    )
     assert "tools/g4a_image_inspect.py" in workflow
     assert "tools/g4a_ci_evidence.py" in workflow
     for reference in re.findall(r"uses:\s+[^@\s]+@([^\s#]+)", workflow):

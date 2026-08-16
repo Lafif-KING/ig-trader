@@ -30,16 +30,18 @@ Informational, and `4` Verbose. This stage uses:
 | Alert | Signal and threshold | Severity | Evaluation |
 | --- | --- | --- | --- |
 | Replica below one | `Replicas`, Maximum `< 1` | 0 Critical | Every 1 minute over 5 minutes |
-| Replica above one | `Replicas`, Maximum `> 1` | 0 Critical | Every 1 minute over 5 minutes |
+| Replica above one | `Replicas`, Maximum `> 1`; `PLATFORM_OVERLAP_OR_SCALE_DRIFT` | 0 Critical | Every 1 minute over 5 minutes |
 | Restart | `RestartCount`, Maximum `> 0` | 2 Warning | Every 1 minute over 5 minutes |
 | Unsafe startup | Count of bounded structured-query matches `> 0` | 0 Critical | Every 5 minutes over 5 minutes |
 
 The five-minute metric window filters single-sample telemetry gaps while still
 detecting availability loss quickly. Maximum is the service's primary
-aggregation for both live metrics. For the singleton guard and restart signal,
-Maximum also ensures any unsafe high replica count or restart in the window is
-visible. All rules are stateful and automatically resolve when their condition
-clears. An alert is evidence only; it never grants execution authority.
+aggregation for both live metrics. A high replica count remains visible, but
+Container Apps can briefly overlap replicas during platform operations, so it
+is not the trading-singleton guard. The future execution invariant is one
+active PostgreSQL lease holder with a current fencing token. All rules are
+stateful and automatically resolve when their condition clears. An alert is
+evidence only; it never grants execution authority.
 
 ## Actual Log Analytics schema and bounded query
 
@@ -55,11 +57,13 @@ The current `cloud_service_started` console record is valid JSON. It reliably
 contains `event`, `execution_mode`, `worker_enabled`, `worker_process_count`,
 and `commit_sha`. The observed safe values are `NO_EXECUTION`, `false`, `1`,
 and application source SHA
-`903dff5d07af03da593d3afff8b53c427704bd21`. The field `authorized` and the
-network/broker counters are not present in this startup record, so this alert
-does not pretend to validate them from logs. They remain mandatory direct
-health/readiness evidence, and adding them to a future structured safety event
-is required before `SHADOW_DEMO` observability can claim that coverage.
+`903dff5d07af03da593d3afff8b53c427704bd21`. The deployed image inspected by
+G4B-02A1 does not contain `authorized` or the network/broker counters in this
+startup record, so the deployed alert does not pretend to validate them from
+logs. G4B-02B1 source adds explicit `authorized=false` plus replica-role,
+lease, fence, and heartbeat fields to startup and health evidence. That source
+is not deployed by 02B1; changing the deployed query remains a separately
+reviewed alert operation before `SHADOW_DEMO`.
 
 The alert uses only the proven current schema:
 
@@ -103,7 +107,7 @@ safety state differ from the approved baseline.
 
 Before the action, capture and sanitize evidence for:
 
-1. exactly one active, Healthy/Ready revision and exactly one replica;
+1. exactly one active, Healthy/Ready revision and the current replica identities;
 2. the replica name and current restart metric;
 3. HTTP 200 from `/health`, `/health/live`, and `/health/ready` from the existing
    internal validation path;
@@ -127,8 +131,9 @@ an error. Treat the state as unknown, stop, and inspect read-only Azure state.
 After the single restart, wait within the separately approved bounded window
 and prove:
 
-1. the same revision returns Healthy/Ready with exactly one replica and never
-   exposes a second execution replica;
+1. the same revision returns Healthy/Ready and any platform replica overlap is
+   recorded; future executable revisions additionally prove exactly one active
+   database lease holder;
 2. all three health endpoints return HTTP 200;
 3. `EXECUTION_MODE=NO_EXECUTION`, authorization remains false, the worker stays
    disabled, and all five safety counters remain zero;

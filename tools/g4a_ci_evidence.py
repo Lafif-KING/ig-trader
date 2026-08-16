@@ -43,6 +43,7 @@ def assemble(directory: Path) -> dict[str, Any]:
         "g3b": _junit(directory / "tests-g3b.xml"),
         "g4a": _junit(directory / "tests-g4a.xml"),
         "g4b_ops": _junit(directory / "tests-g4b-ops.xml"),
+        "g4b_lease": _junit(directory / "tests-g4b-lease.xml"),
     }
     container = _json(directory / "container-smoke.json")
     image = _json(directory / "image-inspection.json")
@@ -89,9 +90,11 @@ def _markdown(evidence: dict[str, Any]) -> str:
             f"- Run: `{evidence['run_id']}`",
             f"- Candidate: `{evidence['candidate_sha']}`",
             f"- Complete tests: `{tests['complete']['tests']}` passed",
-            f"- G1/G2/G3A/G3B/G4A/G4B-ops: `{tests['g1']['tests']}` / `{tests['g2']['tests']}` / "
+            "- G1/G2/G3A/G3B/G4A/G4B-ops/G4B-lease: "
+            f"`{tests['g1']['tests']}` / `{tests['g2']['tests']}` / "
             f"`{tests['g3a']['tests']}` / `{tests['g3b']['tests']}` / "
-            f"`{tests['g4a']['tests']}` / `{tests['g4b_ops']['tests']}` passed",
+            f"`{tests['g4a']['tests']}` / `{tests['g4b_ops']['tests']}` / "
+            f"`{tests['g4b_lease']['tests']}` passed",
             f"- Image digest: `{image['image_digest']}`",
             f"- Bicep: `{evidence['bicep']['status']}`",
             f"- Container: `{container['classification']}`",

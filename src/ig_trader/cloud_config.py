@@ -10,6 +10,7 @@ from dataclasses import dataclass
 NO_EXECUTION = "NO_EXECUTION"
 
 _COMMIT_PATTERN = re.compile(r"(?:unknown|[0-9a-f]{7,64})\Z")
+_REPLICA_INSTANCE_PATTERN = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}\Z")
 _LOG_LEVELS = {"CRITICAL", "ERROR", "WARNING", "INFO", "DEBUG"}
 _CREDENTIAL_NAMES = {
     "CST",
@@ -36,6 +37,7 @@ class CloudConfig:
     commit_sha: str
     version: str
     image_revision: str
+    replica_instance_id: str
     log_level: str
     shutdown_grace_seconds: float
 
@@ -84,6 +86,14 @@ class CloudConfig:
         if not image_revision or len(image_revision) > 128:
             raise UnsafeCloudConfiguration("CONTAINER_APP_REVISION is invalid")
 
+        replica_instance_id = (
+            values.get("CONTAINER_APP_REPLICA_NAME", "").strip()
+            or values.get("HOSTNAME", "").strip()
+            or "local"
+        )
+        if not _REPLICA_INSTANCE_PATTERN.fullmatch(replica_instance_id):
+            raise UnsafeCloudConfiguration("replica instance identity is invalid")
+
         log_level = values.get("LOG_LEVEL", "INFO").strip().upper()
         if log_level not in _LOG_LEVELS:
             raise UnsafeCloudConfiguration("LOG_LEVEL is invalid")
@@ -102,6 +112,7 @@ class CloudConfig:
             commit_sha=commit_sha,
             version=version,
             image_revision=image_revision,
+            replica_instance_id=replica_instance_id,
             log_level=log_level,
             shutdown_grace_seconds=shutdown_grace_seconds,
         )

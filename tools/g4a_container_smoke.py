@@ -84,6 +84,19 @@ def _assert_health(document: dict[str, object], expected_commit: str) -> None:
         raise ContainerSmokeError("container did not default to NO_EXECUTION")
     if execution.get("authorized") is not False or execution.get("worker_enabled") is not False:
         raise ContainerSmokeError("execution unexpectedly has authority")
+    expected_lease = {
+        "fencing_token": None,
+        "lease_heartbeat_state": "DISABLED",
+        "lease_holder": False,
+        "lease_name": "execution-worker",
+        "lease_state": "DISABLED",
+        "runtime_role": "NO_EXECUTION",
+    }
+    if any(execution.get(name) != value for name, value in expected_lease.items()):
+        raise ContainerSmokeError("NO_EXECUTION lease or fencing metadata is unsafe")
+    replica_instance_id = execution.get("replica_instance_id")
+    if not isinstance(replica_instance_id, str) or not replica_instance_id:
+        raise ContainerSmokeError("replica instance identity is unavailable")
     if execution.get("replica_policy") != {"min_replicas": 1, "max_replicas": 1}:
         raise ContainerSmokeError("singleton replica policy is missing")
     if not isinstance(safety, dict):

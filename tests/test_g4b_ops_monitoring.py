@@ -109,7 +109,7 @@ def test_replica_below_one_alert_is_critical_and_bounded() -> None:
         assert expected in block
 
 
-def test_replica_above_one_alert_is_critical_singleton_guard() -> None:
+def test_replica_above_one_alert_remains_platform_overlap_signal() -> None:
     source = _read(TEMPLATE)
     block = _resource_block(source, "replicaAboveOneAlert", "restartAlert")
 
@@ -123,6 +123,7 @@ def test_replica_above_one_alert_is_critical_singleton_guard() -> None:
         "executionWorker.id",
     ):
         assert expected in block
+    assert "PLATFORM_OVERLAP_OR_SCALE_DRIFT" in _read(RUNBOOK)
 
 
 def test_restart_alert_is_warning_on_supported_restart_metric() -> None:
@@ -206,7 +207,7 @@ def test_restart_runbook_is_documentation_only_and_preserves_safety() -> None:
     for expected in (
         "DO NOT EXECUTE DURING G4B-02A1",
         "az containerapp revision restart",
-        "exactly one replica",
+        "current replica identities",
         "EXECUTION_MODE=NO_EXECUTION",
         "restart alert",
         "network_call_count = 0",

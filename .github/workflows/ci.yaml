@@ -2,7 +2,7 @@ name: Cloud foundation CI
 
 on:
   push:
-    branches: ["main", "codex/g4a-01-cloud-foundation", "codex/g4b-02a1-operational-alerts"]
+    branches: ["main", "codex/g4a-01-cloud-foundation", "codex/g4b-02a1-operational-alerts", "codex/g4b-02b1-execution-lease"]
   pull_request:
     branches: ["main"]
   workflow_dispatch:
@@ -18,6 +18,20 @@ jobs:
   test-scan-build:
     runs-on: ubuntu-24.04
     timeout-minutes: 30
+    env:
+      TEST_POSTGRES_DSN: postgresql://postgres@127.0.0.1:5432/postgres?sslmode=disable
+    services:
+      postgres:
+        image: postgres:16.10-bookworm@sha256:38471f330eb885e04de130b768d6db4e10469e2311879c7e5c699f6d2d8a1c74
+        env:
+          POSTGRES_HOST_AUTH_METHOD: trust
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready --username postgres --dbname postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 12
     steps:
       - name: Checkout immutable source
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
@@ -76,6 +90,12 @@ jobs:
           poetry run pytest -q \
             --junitxml=artifacts/ci/tests-g4b-ops.xml \
             tests/test_g4b_ops_monitoring.py
+
+      - name: G4B execution lease and fencing focused tests
+        run: |
+          poetry run pytest -q \
+            --junitxml=artifacts/ci/tests-g4b-lease.xml \
+            tests/test_execution_lease.py
 
       - name: Ruff
         run: poetry run ruff check .

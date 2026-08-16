@@ -18,7 +18,7 @@ must not be deployed without a separate G4B-01 approval.
 `dev-shadow-app.bicep` deploys the unchanged G4A cloud runtime with:
 
 - `EXECUTION_MODE=NO_EXECUTION`;
-- one process, one active revision and exactly one replica;
+- one process, one active revision and a steady-state target of one replica;
 - 0.5 vCPU and 1 GiB memory;
 - internal-only ingress;
 - no Key Vault reference, broker secret, broker environment variable or secret value;
@@ -47,7 +47,8 @@ container acceptance architecture are unchanged.
 9. one internal non-zone-redundant Container Apps Consumption environment; and
 10. console, system and metric diagnostic routing to Log Analytics.
 
-The application stage adds one internal singleton Container App. No Key Vault,
+The application stage adds one internal, single-revision Container App sized
+for one steady-state replica. No Key Vault,
 ACR private endpoint, Key Vault private endpoint, private-endpoint subnet, NAT
 Gateway, firewall or load balancer is defined.
 
@@ -77,10 +78,12 @@ access, managed-identity secret references, secret redaction and an explicit
 security review are mandatory. The unchanged G4A hardened profile preserves the
 reference architecture for that work.
 
-The Container Apps environment is not zone redundant, and the worker has only
-one replica. This is intentional for DEV cost and singleton safety. Operational
-continuity comes from immutable-image redeployment, not concurrent execution
-replicas.
+The Container Apps environment is not zone redundant, and the worker targets
+one steady-state replica. This is intentional for DEV cost. Azure platform
+operations can briefly overlap replicas, so execution singleton safety must
+come from the PostgreSQL lease and fencing token, not replica count.
+Operational continuity comes from immutable-image redeployment plus fenced
+lease handoff, not concurrent execution authority.
 
 ## Logging and evidence
 

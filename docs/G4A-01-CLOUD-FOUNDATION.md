@@ -27,7 +27,7 @@ of credential, IG session, REST, streaming, market-data and execution modules,
 and block every outbound socket connection. Incoming health requests remain
 available.
 
-The eventual execution worker is a singleton by construction:
+The execution worker has one-replica steady-state sizing:
 
 ```text
 process workers = 1
@@ -36,8 +36,10 @@ Container Apps max replicas = 1
 active revisions mode = Single
 ```
 
-G4A keeps that worker disabled and unauthorized. A later controlled execution
-work order must provide a different approved composition; changing an
+Azure can temporarily overlap replicas during platform operations even with
+that sizing. G4A keeps every process disabled and unauthorized. A later
+controlled execution composition must use the PostgreSQL execution lease and
+fencing token documented in `G4B-02B1-EXECUTION-LEASE.md`; changing an
 environment variable cannot activate this image.
 
 ## Health contract
@@ -47,7 +49,7 @@ environment variable cannot activate this image.
 - `GET /health`: readiness alias.
 
 Every successful health document includes the Git commit, application version,
-container revision, explicit execution mode, authorization state, singleton
+container revision, explicit execution mode, authorization state, steady-state
 replica policy, credential requirement, broker-module state, and safety
 counters. `order_endpoint_call_count`, `ig_rest_call_count`, and
 `network_call_count` must remain zero.
@@ -94,7 +96,7 @@ The target is an internal Azure Container Apps environment in a delegated VNet.
   private DNS, zone-redundant HA, 14-day backups, Entra-only authentication and
   no public endpoint.
 
-`infra/azure/app.bicep` deploys a digest-addressed image to the singleton
+`infra/azure/app.bicep` deploys a digest-addressed image to the single-revision
 Container App. It sets `NO_EXECUTION`, configures startup/liveness/readiness
 probes and provides a 30-second platform termination grace period. The current
 broker-secret-reference switch defaults false and must remain false for G4A.
@@ -154,7 +156,7 @@ records for:
 The future adapter must transact intent state, lifecycle event and version
 change together; refuse missing or corrupt state; use IG as broker-position
 truth; use the strategy registry as ownership truth; and acquire both the
-singleton Container Apps topology and database fencing lease before any order.
+steady-state Container Apps topology and database fencing lease before any order.
 The schema does not replace or migrate offline SQLite data.
 
 Migrations use expand-then-migrate-then-contract discipline. They run as a
@@ -174,7 +176,10 @@ Required alerts for the deployment gate are:
 
 - critical: any `cloud_start_rejected` or `cloud_service_failed` event;
 - critical: any reported order, IG REST, or successful outbound network counter above zero;
-- critical: active or desired execution-worker replicas other than exactly one;
+- critical: steady-state replica drift, with overlap classified as
+  `PLATFORM_OVERLAP_OR_SCALE_DRIFT` rather than proof of multiple active workers;
+- critical: more than one active execution lease holder or fencing generation;
+- high: lease lost, lease renewal failure, or stale fencing token rejection;
 - high: readiness remains failed or revision restarts repeatedly for five minutes;
 - high: PostgreSQL unavailable, storage above 80%, HA unhealthy, or backup failure;
 - medium: no `cloud_service_started`/health telemetry in the expected interval.

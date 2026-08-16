@@ -35,6 +35,7 @@ def _config(**overrides: object) -> CloudConfig:
         "commit_sha": COMMIT,
         "version": "0.1.0",
         "image_revision": "test-revision",
+        "replica_instance_id": "test-replica-a",
         "log_level": "INFO",
         "shutdown_grace_seconds": 2.0,
     }
@@ -63,6 +64,7 @@ def test_cloud_config_defaults_to_no_execution_without_credentials() -> None:
     assert config.execution_mode == NO_EXECUTION
     assert config.port == 8080
     assert config.commit_sha == "unknown"
+    assert config.replica_instance_id
 
 
 @pytest.mark.parametrize(
@@ -97,6 +99,13 @@ async def test_health_readiness_metadata_and_graceful_drain() -> None:
         assert ready["execution"] == {
             "mode": "NO_EXECUTION",
             "authorized": False,
+            "fencing_token": None,
+            "lease_heartbeat_state": "DISABLED",
+            "lease_holder": False,
+            "lease_name": "execution-worker",
+            "lease_state": "DISABLED",
+            "replica_instance_id": "test-replica-a",
+            "runtime_role": "NO_EXECUTION",
             "worker_enabled": False,
             "worker_process_count": 1,
             "replica_policy": {"min_replicas": 1, "max_replicas": 1},
@@ -219,6 +228,9 @@ def test_real_launcher_starts_without_credentials_and_stops_gracefully() -> None
         health = _wait_for_real_health(port, process)
         assert health["release"]["commit_sha"] == COMMIT
         assert health["execution"]["mode"] == "NO_EXECUTION"
+        assert health["execution"]["authorized"] is False
+        assert health["execution"]["runtime_role"] == "NO_EXECUTION"
+        assert health["execution"]["lease_holder"] is False
         assert health["safety"]["network_call_count"] == 0
         assert health["safety"]["order_endpoint_call_count"] == 0
         assert health["safety"]["credentials_required"] is False
@@ -244,6 +256,11 @@ def test_real_launcher_starts_without_credentials_and_stops_gracefully() -> None
     assert stopped["safety"]["network_call_count"] == 0
     assert stopped["safety"]["order_endpoint_call_count"] == 0
     assert stopped["safety"]["broker_modules_loaded"] is False
+    started = next(event for event in events if event["event"] == "cloud_service_started")
+    assert started["authorized"] is False
+    assert started["runtime_role"] == "NO_EXECUTION"
+    assert started["lease_state"] == "DISABLED"
+    assert started["replica_instance_id"]
 
 
 def _reserve_port() -> int:

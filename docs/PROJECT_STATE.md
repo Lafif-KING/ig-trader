@@ -1,6 +1,6 @@
 # IG Trader project state
 
-Last updated: 2026-08-15
+Last updated: 2026-08-16
 
 ## Active execution scope
 
@@ -69,8 +69,9 @@ requires no credential. The legacy broker-capable `main.py` is unchanged.
 
 The production container is a locked two-stage, non-root build. CI verifies the
 lock, full suite, Ruff, format, secret scans, image build, container lifecycle,
-commit metadata and zero order calls. Azure Bicep defines an internal singleton
-Container App (`minReplicas=1`, `maxReplicas=1`), managed identity, private ACR
+commit metadata and zero order calls. Azure Bicep defines an internal
+single-revision Container App (`minReplicas=1`, `maxReplicas=1`), managed
+identity, private ACR
 and Key Vault, Log Analytics, and private Entra-only PostgreSQL. SQLite remains
 the deterministic offline test backend; the versioned PostgreSQL schema is a
 separate future cloud-persistence contract.
@@ -87,7 +88,7 @@ G4B-00 authenticated Azure preflight accepted France Central, resource group
 production-like profile for the first DEV environment on cost grounds. The G4A
 templates remain unchanged as the future hardened profile.
 
-The separate `dev-shadow-*` Bicep profile keeps the internal singleton
+The separate `dev-shadow-*` Bicep profile keeps the internal single-revision
 Container App (`minReplicas=1`, `maxReplicas=1`), immutable image identity,
 managed-identity ACR pull, private Entra-only PostgreSQL, durable schema and
 operational logging. It uses Basic ACR, Burstable B1ms PostgreSQL 16 with 32 GB,
@@ -95,3 +96,13 @@ no HA, seven-day backups and 30-day logs. Key Vault and ACR/Key Vault private
 endpoints are intentionally deferred because `NO_EXECUTION` accepts no broker
 credential. The decision and mandatory future security gates are documented in
 `docs/G4B-00-LOW-COST-DEV-SHADOW.md`.
+
+G4B-02A2 proved that Container Apps can temporarily overlap ready replicas
+during a platform revision restart even when min/max remain one. Replica count
+therefore remains a steady-state cost and drift control, not the trading
+singleton guarantee. G4B-02B1 reuses the accepted PostgreSQL
+`trading.worker_leases` table and adds atomic acquisition, heartbeat, expiry,
+monotonic fencing, fenced execution-state writes, explicit replica roles, and
+managed-identity token authentication design. The current runtime remains
+`NO_EXECUTION`, emits `authorized=false`, does not connect to PostgreSQL, and
+has no broker authority. See `docs/G4B-02B1-EXECUTION-LEASE.md`.

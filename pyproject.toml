@@ -18,6 +18,8 @@ ta = "^0.11.0"
 sqlalchemy = "^2.0.51"
 lightstreamer-client-lib = "^2.2.2"
 truststore = "^0.10.4"
+azure-identity = ">=1.25,<2.0"
+psycopg = {version = ">=3.2,<4.0", extras = ["binary"]}
 
 [tool.poetry.group.dev.dependencies]
 ruff = "0.15.0"

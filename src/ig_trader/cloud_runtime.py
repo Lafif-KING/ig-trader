@@ -21,6 +21,7 @@ from src.ig_trader.cloud_safety import (
     activate,
     broker_modules_loaded,
 )
+from src.ig_trader.execution_lease import no_execution_lease_status
 
 logger = structlog.get_logger(__name__)
 
@@ -36,11 +37,12 @@ class ServiceState(StrEnum):
 
 
 class CloudService:
-    """Minimal health server for the future singleton execution worker."""
+    """Minimal health server for the fenced future execution worker."""
 
     def __init__(self, config: CloudConfig, metrics: CloudSafetyMetrics) -> None:
         self.config = config
         self.metrics = metrics
+        self.lease_status = no_execution_lease_status(config.replica_instance_id)
         self.state = ServiceState.STARTING
         self.shutdown_reason = "not_requested"
         self._shutdown = asyncio.Event()
@@ -71,6 +73,7 @@ class CloudService:
             port=self.port,
             worker_enabled=False,
             worker_process_count=1,
+            **self.lease_status.document(),
         )
 
     def request_shutdown(self, reason: str) -> None:
@@ -131,10 +134,10 @@ class CloudService:
             },
             "execution": {
                 "mode": self.config.execution_mode,
-                "authorized": False,
                 "worker_enabled": False,
                 "worker_process_count": 1,
                 "replica_policy": {"min_replicas": 1, "max_replicas": 1},
+                **self.lease_status.document(),
             },
             "safety": {
                 **self.metrics.document(),
