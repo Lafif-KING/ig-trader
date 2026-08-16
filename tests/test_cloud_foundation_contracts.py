@@ -34,7 +34,9 @@ def test_ci_contains_every_required_gate_and_sha_pins_actions() -> None:
         "- name: G3A focused tests",
         "- name: G4A focused tests",
         "- name: G4B operations focused tests",
-        "- name: G4B execution lease and fencing focused tests",
+        "- name: G4B execution lease unit tests",
+        "- name: G4B PostgreSQL fencing proof",
+        "- name: G4B PostgreSQL two-process handoff proof",
         "- name: Ruff",
         "- name: Formatting",
         "- name: Repository pre-commit hooks",
@@ -60,9 +62,11 @@ def test_ci_contains_every_required_gate_and_sha_pins_actions() -> None:
     assert "tests/test_g3a_market_data.py" in workflow
     assert "tests/test_cloud_runtime.py" in workflow
     assert "tests/test_execution_lease.py" in workflow
-    assert "tests-g4b-lease.xml" in workflow
+    assert "tests-g4b-lease-unit.xml" in workflow
+    assert "tests-g4b-lease-fencing.xml" in workflow
+    assert "tests-g4b-lease-concurrency.xml" in workflow
     assert 'RUN_POSTGRES_INTEGRATION: "1"' in workflow
-    assert "timeout --signal=TERM --kill-after=10s 120s" in workflow
+    assert "timeout --signal=TERM --kill-after=10s 60s" in workflow
     assert "postgres:16.10-bookworm@sha256:" in workflow
     assert "POSTGRES_HOST_AUTH_METHOD: trust" in workflow
     assert "order_endpoint_call_count" in _read("tools/g4a_container_smoke.py")

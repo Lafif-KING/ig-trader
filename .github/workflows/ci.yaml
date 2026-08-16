@@ -91,13 +91,27 @@ jobs:
             --junitxml=artifacts/ci/tests-g4b-ops.xml \
             tests/test_g4b_ops_monitoring.py
 
-      - name: G4B execution lease and fencing focused tests
+      - name: G4B execution lease unit tests
+        run: |
+          poetry run pytest -q \
+            --junitxml=artifacts/ci/tests-g4b-lease-unit.xml \
+            tests/test_execution_lease.py
+
+      - name: G4B PostgreSQL fencing proof
         env:
           RUN_POSTGRES_INTEGRATION: "1"
         run: |
-          timeout --signal=TERM --kill-after=10s 120s poetry run pytest -q \
-            --junitxml=artifacts/ci/tests-g4b-lease.xml \
-            tests/test_execution_lease.py
+          timeout --signal=TERM --kill-after=10s 60s poetry run pytest -q \
+            --junitxml=artifacts/ci/tests-g4b-lease-fencing.xml \
+            tests/test_execution_lease.py::test_postgresql_rejects_unfenced_and_stale_state_changes
+
+      - name: G4B PostgreSQL two-process handoff proof
+        env:
+          RUN_POSTGRES_INTEGRATION: "1"
+        run: |
+          timeout --signal=TERM --kill-after=10s 60s poetry run pytest -q \
+            --junitxml=artifacts/ci/tests-g4b-lease-concurrency.xml \
+            tests/test_execution_lease.py::test_two_processes_elect_one_leader_then_handoff_after_leader_crash
 
       - name: Ruff
         run: poetry run ruff check .
