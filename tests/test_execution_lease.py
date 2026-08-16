@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
-import multiprocessing
+import json
 import os
+import subprocess
+import sys
 import time
 from collections.abc import Callable
+from contextlib import suppress
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -35,6 +38,7 @@ ROOT = Path(__file__).resolve().parents[1]
 POSTGRES_DSN_ENV = "TEST_POSTGRES_DSN"
 POSTGRES_INTEGRATION_ENV = "RUN_POSTGRES_INTEGRATION"
 POSTGRES_TEST_ROLE = "g4b02b1_runtime_test"
+LEASE_WORKER = ROOT / "tools/g4b_lease_test_worker.py"
 
 
 class MemoryLeaseStore:
@@ -423,57 +427,59 @@ def _prepare_postgres(dsn: str) -> None:
         )
 
 
-def _lease_process(
-    dsn: str,
-    instance_id: str,
-    ttl_seconds: float,
-    start: Any,
-    hold: Any,
-    result: Any,
-) -> None:
-    try:
-        store = PostgresExecutionLeaseStore(lambda: _postgres_connection(dsn))
-        start.wait(15)
-        lease = store.acquire(EXECUTION_LEASE_NAME, instance_id, ttl_seconds)
-        result.send(
-            {
-                "instance": instance_id,
-                "role": "LEADER" if lease else "STANDBY",
-                "token": lease.fencing_token if lease else None,
-            }
-        )
-        if lease is not None:
-            hold.wait(30)
-    finally:
-        result.close()
-
-
 def _start_lease_process(
-    context: Any,
-    *,
-    dsn: str,
+    directory: Path,
     instance_id: str,
     ttl_seconds: float,
-    start: Any,
-    hold: Any,
-) -> tuple[Any, Any]:
-    receiver, sender = context.Pipe(duplex=False)
-    process = context.Process(
-        target=_lease_process,
-        args=(dsn, instance_id, ttl_seconds, start, hold, sender),
+    result_name: str,
+    release_name: str,
+) -> tuple[subprocess.Popen[bytes], Path, Path]:
+    result = directory / result_name
+    release = directory / release_name
+    process = subprocess.Popen(
+        [
+            sys.executable,
+            str(LEASE_WORKER),
+            "--instance-id",
+            instance_id,
+            "--ttl-seconds",
+            str(ttl_seconds),
+            "--result-file",
+            str(result),
+            "--release-file",
+            str(release),
+        ],
+        cwd=ROOT,
+        env=os.environ.copy(),
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
     )
-    process.start()
-    sender.close()
-    return process, receiver
+    return process, result, release
 
 
-def _stop_process(process: Any) -> None:
-    if process.is_alive():
+def _stop_process(process: subprocess.Popen[bytes]) -> None:
+    if process.poll() is None:
         process.terminate()
-        process.join(timeout=5)
-    if process.is_alive():
+        with suppress(subprocess.TimeoutExpired):
+            process.wait(timeout=5)
+    if process.poll() is None:
         process.kill()
-        process.join(timeout=5)
+        process.wait(timeout=5)
+
+
+def _wait_for_result(path: Path, process: subprocess.Popen[bytes]) -> dict[str, Any]:
+    deadline = time.monotonic() + 20
+    while time.monotonic() < deadline:
+        if path.exists():
+            value = json.loads(path.read_text(encoding="utf-8"))
+            assert isinstance(value, dict)
+            return value
+        if process.poll() is not None:
+            break
+        time.sleep(0.05)
+    raise AssertionError(
+        f"lease worker produced no result: exit_code={process.poll()} result={path.name}"
+    )
 
 
 def _required_postgres_dsn() -> str:
@@ -485,79 +491,77 @@ def _required_postgres_dsn() -> str:
     return dsn
 
 
-def test_two_processes_elect_one_leader_then_handoff_after_leader_crash() -> None:
+def test_two_processes_elect_one_leader_then_handoff_after_leader_crash(
+    tmp_path: Path,
+) -> None:
     dsn = _required_postgres_dsn()
     _prepare_postgres(dsn)
-    context = multiprocessing.get_context("spawn")
-    start = context.Event()
-    hold = context.Event()
-    processes: dict[str, Any] = {}
-    receivers: dict[str, Any] = {}
-    successor: Any = None
-    successor_receiver: Any = None
-    successor_hold: Any = None
+    processes: dict[str, subprocess.Popen[bytes]] = {}
+    result_paths: dict[str, Path] = {}
+    release_paths: list[Path] = []
+    successor: subprocess.Popen[bytes] | None = None
     try:
         for instance in ("process-a", "process-b"):
-            process, receiver = _start_lease_process(
-                context,
-                dsn=dsn,
-                instance_id=instance,
-                ttl_seconds=2.0,
-                start=start,
-                hold=hold,
+            process, result, release = _start_lease_process(
+                tmp_path,
+                instance,
+                2.0,
+                f"{instance}.json",
+                f"{instance}.release",
             )
             processes[instance] = process
-            receivers[instance] = receiver
+            result_paths[instance] = result
+            release_paths.append(release)
 
-        start.set()
-        assert all(receiver.poll(20) for receiver in receivers.values())
-        initial = [receiver.recv() for receiver in receivers.values()]
+        initial = [
+            _wait_for_result(result_paths[instance], processes[instance])
+            for instance in ("process-a", "process-b")
+        ]
 
+        assert all(item["status"] == "PASS" for item in initial)
         assert sorted(item["role"] for item in initial) == ["LEADER", "STANDBY"]
         leader_result = next(item for item in initial if item["role"] == "LEADER")
         follower_result = next(item for item in initial if item["role"] == "STANDBY")
         leader_process = processes[leader_result["instance"]]
         leader_process.terminate()
-        leader_process.join(timeout=10)
-        assert not leader_process.is_alive()
-        hold.set()
+        leader_process.wait(timeout=10)
         follower_process = processes[follower_result["instance"]]
-        follower_process.join(timeout=10)
-        assert follower_process.exitcode == 0
+        assert follower_process.wait(timeout=10) == 0
 
         time.sleep(2.2)
-        successor_start = context.Event()
-        successor_hold = context.Event()
-        successor, successor_receiver = _start_lease_process(
-            context,
-            dsn=dsn,
-            instance_id=follower_result["instance"],
-            ttl_seconds=2.0,
-            start=successor_start,
-            hold=successor_hold,
+        successor, successor_result_path, successor_release = _start_lease_process(
+            tmp_path,
+            follower_result["instance"],
+            2.0,
+            "successor.json",
+            "successor.release",
         )
-        successor_start.set()
-        assert successor_receiver.poll(20)
-        handoff = successor_receiver.recv()
-        successor_hold.set()
-        successor.join(timeout=10)
+        release_paths.append(successor_release)
+        handoff = _wait_for_result(successor_result_path, successor)
+        successor_release.touch()
+        assert successor.wait(timeout=10) == 0
 
-        assert successor.exitcode == 0
+        assert handoff["status"] == "PASS"
         assert handoff["role"] == "LEADER"
         assert handoff["instance"] == follower_result["instance"]
         assert handoff["token"] > leader_result["token"]
+        with _postgres_connection(dsn) as connection:
+            owner, token = connection.execute(
+                """
+                SELECT owner_instance, fencing_token
+                FROM trading.worker_leases
+                WHERE lease_name = 'execution-worker'
+                """
+            ).fetchone()
+        assert owner == follower_result["instance"]
+        assert token == handoff["token"]
     finally:
-        hold.set()
-        if successor_hold is not None:
-            successor_hold.set()
+        for release in release_paths:
+            release.touch(exist_ok=True)
         for process in processes.values():
             _stop_process(process)
         if successor is not None:
             _stop_process(successor)
-        for receiver in receivers.values():
-            receiver.close()
-        if successor_receiver is not None:
-            successor_receiver.close()
 
 
 def test_postgresql_rejects_unfenced_and_stale_state_changes() -> None:
