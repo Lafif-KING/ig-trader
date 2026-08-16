@@ -28,6 +28,8 @@ from ig_trader.execution_lease import (
 
 RUNTIME_PRINCIPAL_NAME = "igtrdevfrc-execution-identity"
 BOOTSTRAP_PRINCIPAL_NAME = "igtrdevfrc-db-bootstrap-identity"
+REMEDIATION_PRINCIPAL_NAME = "igtrdevfrc-db-remediation-identity"
+DURABLE_OWNER_NAME = "ig_trader_schema_owner"
 DATABASE_NAME = "ig_trader"
 
 EXPECTED_MIGRATION_HASHES = {
@@ -57,6 +59,8 @@ class BootstrapClassification(StrEnum):
     PASS_SCHEMA_INSPECTION = "PASS_SCHEMA_INSPECTION"
     PASS_BOOTSTRAP_ADMIN = "PASS_BOOTSTRAP_ADMIN"
     PASS_RUNTIME_PROBE = "PASS_RUNTIME_PROBE"
+    PASS_OWNERSHIP_INSPECTION = "PASS_OWNERSHIP_INSPECTION"
+    PASS_OWNERSHIP_REMEDIATION = "PASS_OWNERSHIP_REMEDIATION"
     DATABASE_SCHEMA_DRIFT = "DATABASE_SCHEMA_DRIFT"
     IDENTITY_MISMATCH = "IDENTITY_MISMATCH"
     PRIVILEGE_MISMATCH = "PRIVILEGE_MISMATCH"
@@ -84,6 +88,10 @@ class PrivilegeMismatch(BootstrapError):
 
 class DatabaseUnavailable(BootstrapError):
     classification = BootstrapClassification.DATABASE_UNAVAILABLE
+
+
+class OwnershipTransferFailure(BootstrapError):
+    classification = "OWNERSHIP_TRANSFER_FAILURE"
 
 
 class MigrationState(StrEnum):
@@ -220,6 +228,31 @@ class PrincipalRecord:
 
 
 @dataclass(frozen=True)
+class RoleRecord:
+    role_name: str
+    can_login: bool
+    is_superuser: bool
+    can_create_role: bool
+    can_create_database: bool
+    can_replicate: bool
+    bypasses_rls: bool
+    azure_pg_admin_member: bool
+
+
+@dataclass(frozen=True)
+class OwnershipInventory:
+    database_owners: tuple[tuple[str, str], ...]
+    schema_owners: tuple[tuple[str, str], ...]
+    relation_owners: tuple[tuple[str, str, str], ...]
+    function_owners: tuple[tuple[str, str], ...]
+    migration_ledger: tuple[tuple[str, str], ...]
+    orphan_acl_count: int
+    orphan_default_acl_count: int
+    orphan_memberships: tuple[tuple[str, str], ...]
+    orphan_dependency_count: int
+
+
+@dataclass(frozen=True)
 class PrivilegeSnapshot:
     database_connect: bool
     database_create: bool
@@ -240,6 +273,7 @@ class JobConfig:
     job_identity_name: str
     job_identity_object_id: str
     runtime_identity_object_id: str | None
+    orphan_identity_object_id: str | None
 
     @classmethod
     def from_environment(cls, mode: str, environment: Mapping[str, str]) -> JobConfig:
@@ -269,10 +303,26 @@ class JobConfig:
                 if runtime_object_id == identity_object_id:
                     raise IdentityMismatch("bootstrap and runtime identities must be distinct")
             database_user = BOOTSTRAP_PRINCIPAL_NAME
+            orphan_object_id = None
+        elif mode in {"ownership-inspect", "ownership-remediate"}:
+            if identity_name != REMEDIATION_PRINCIPAL_NAME:
+                raise IdentityMismatch("remediation identity is required")
+            runtime_object_id = _uuid(
+                environment.get("RUNTIME_UAMI_OBJECT_ID", ""),
+                "RUNTIME_UAMI_OBJECT_ID",
+            )
+            if runtime_object_id == identity_object_id:
+                raise IdentityMismatch("remediation and runtime identities must be distinct")
+            orphan_object_id = _uuid(
+                environment.get("ORPHAN_UAMI_OBJECT_ID", ""),
+                "ORPHAN_UAMI_OBJECT_ID",
+            )
+            database_user = REMEDIATION_PRINCIPAL_NAME
         elif mode == "runtime-probe":
             if identity_name != RUNTIME_PRINCIPAL_NAME:
                 raise IdentityMismatch("runtime identity is required")
             runtime_object_id = None
+            orphan_object_id = None
             database_user = RUNTIME_PRINCIPAL_NAME
         else:
             raise BootstrapError("unsupported job mode")
@@ -285,6 +335,7 @@ class JobConfig:
             job_identity_name=identity_name,
             job_identity_object_id=identity_object_id,
             runtime_identity_object_id=runtime_object_id,
+            orphan_identity_object_id=orphan_object_id,
         )
 
 
@@ -554,6 +605,216 @@ def verify_bootstrap_administrator(connection: Any, config: JobConfig) -> None:
         raise IdentityMismatch("temporary bootstrap identity is not the current Entra admin")
 
 
+def read_role_record(connection: Any, role_name: str) -> RoleRecord | None:
+    row = connection.execute(
+        """
+        SELECT rolname, rolcanlogin, rolsuper, rolcreaterole, rolcreatedb,
+               rolreplication, rolbypassrls,
+               pg_has_role(rolname, 'azure_pg_admin', 'MEMBER')
+        FROM pg_roles
+        WHERE rolname = %s
+        """,
+        (role_name,),
+    ).fetchone()
+    if row is None:
+        return None
+    return RoleRecord(
+        role_name=str(row[0]),
+        can_login=bool(row[1]),
+        is_superuser=bool(row[2]),
+        can_create_role=bool(row[3]),
+        can_create_database=bool(row[4]),
+        can_replicate=bool(row[5]),
+        bypasses_rls=bool(row[6]),
+        azure_pg_admin_member=bool(row[7]),
+    )
+
+
+def validate_durable_owner(record: RoleRecord | None) -> None:
+    if (
+        record is None
+        or record.role_name != DURABLE_OWNER_NAME
+        or record.can_login
+        or record.is_superuser
+        or record.can_create_role
+        or record.can_create_database
+        or record.can_replicate
+        or record.bypasses_rls
+        or record.azure_pg_admin_member
+    ):
+        raise OwnershipTransferFailure("durable owner role attributes are unsafe")
+
+
+def _entra_principal_names(connection: Any, admin_only: bool) -> tuple[str, ...]:
+    rows = connection.execute(
+        "SELECT * FROM pg_catalog.pgaadauth_list_principals(%s)",
+        (admin_only,),
+    ).fetchall()
+    return tuple(sorted(str(row[0]) for row in rows))
+
+
+def verify_remediation_administrator(connection: Any, config: JobConfig) -> None:
+    remediation = read_entra_principal(connection, REMEDIATION_PRINCIPAL_NAME)
+    orphan = read_entra_principal(connection, BOOTSTRAP_PRINCIPAL_NAME)
+    runtime = read_entra_principal(connection, RUNTIME_PRINCIPAL_NAME)
+    if (
+        remediation is None
+        or remediation.object_id != config.job_identity_object_id.casefold()
+        or remediation.principal_type != "service"
+        or not remediation.is_admin
+        or not remediation.azure_pg_admin_member
+    ):
+        raise IdentityMismatch("temporary remediation identity is not the current Entra admin")
+    if (
+        orphan is None
+        or config.orphan_identity_object_id is None
+        or orphan.object_id != config.orphan_identity_object_id.casefold()
+        or orphan.principal_type != "service"
+        or not orphan.is_admin
+        or not orphan.azure_pg_admin_member
+    ):
+        raise IdentityMismatch("orphan bootstrap administrator identity is not exact")
+    if runtime is None or config.runtime_identity_object_id is None:
+        raise IdentityMismatch("runtime database principal is absent")
+    validate_runtime_principal(runtime, config.runtime_identity_object_id)
+
+
+def inspect_ownership(connection: Any) -> OwnershipInventory:
+    database_owners = tuple(
+        (str(row[0]), str(row[1]))
+        for row in connection.execute(
+            """
+            SELECT datname, pg_get_userbyid(datdba)
+            FROM pg_database
+            WHERE datname IN ('postgres', %s)
+            ORDER BY datname
+            """,
+            (DATABASE_NAME,),
+        ).fetchall()
+    )
+    schema_owners = tuple(
+        (str(row[0]), str(row[1]))
+        for row in connection.execute(
+            """
+            SELECT nspname, pg_get_userbyid(nspowner)
+            FROM pg_namespace
+            WHERE nspname = 'trading'
+            ORDER BY nspname
+            """
+        ).fetchall()
+    )
+    relation_owners = tuple(
+        (str(row[0]), str(row[1]), str(row[2]))
+        for row in connection.execute(
+            """
+            SELECT c.relname, c.relkind, pg_get_userbyid(c.relowner)
+            FROM pg_class c
+            JOIN pg_namespace n ON n.oid = c.relnamespace
+            WHERE n.nspname = 'trading'
+              AND c.relkind IN ('r', 'p', 'S', 'v', 'm', 'f')
+            ORDER BY c.relkind, c.relname
+            """
+        ).fetchall()
+    )
+    function_owners = tuple(
+        (f"{row[0]}({row[1]})", str(row[2]))
+        for row in connection.execute(
+            """
+            SELECT p.proname, pg_get_function_identity_arguments(p.oid),
+                   pg_get_userbyid(p.proowner)
+            FROM pg_proc p
+            JOIN pg_namespace n ON n.oid = p.pronamespace
+            WHERE n.nspname = 'trading'
+            ORDER BY p.proname, pg_get_function_identity_arguments(p.oid)
+            """
+        ).fetchall()
+    )
+    migration_ledger = tuple(
+        (str(row[0]), str(row[1]))
+        for row in connection.execute(
+            "SELECT version, checksum_sha256 FROM trading.schema_migrations ORDER BY version"
+        ).fetchall()
+    )
+    acl_count = int(
+        connection.execute(
+            """
+            WITH target AS (SELECT oid FROM pg_roles WHERE rolname = %s), acl_rows AS (
+                SELECT x.grantee, x.grantor FROM pg_class c
+                CROSS JOIN LATERAL aclexplode(coalesce(c.relacl, acldefault('r', c.relowner))) x
+                JOIN pg_namespace n ON n.oid = c.relnamespace
+                WHERE n.nspname = 'trading'
+                UNION ALL
+                SELECT x.grantee, x.grantor FROM pg_namespace n
+                CROSS JOIN LATERAL aclexplode(coalesce(n.nspacl, acldefault('n', n.nspowner))) x
+                WHERE n.nspname = 'trading'
+                UNION ALL
+                SELECT x.grantee, x.grantor FROM pg_proc p
+                CROSS JOIN LATERAL aclexplode(coalesce(p.proacl, acldefault('f', p.proowner))) x
+                JOIN pg_namespace n ON n.oid = p.pronamespace
+                WHERE n.nspname = 'trading'
+                UNION ALL
+                SELECT x.grantee, x.grantor FROM pg_database d
+                CROSS JOIN LATERAL aclexplode(coalesce(d.datacl, acldefault('d', d.datdba))) x
+                WHERE d.datname = %s
+            )
+            SELECT count(*) FROM acl_rows, target
+            WHERE grantee = target.oid OR grantor = target.oid
+            """,
+            (BOOTSTRAP_PRINCIPAL_NAME, DATABASE_NAME),
+        ).fetchone()[0]
+    )
+    default_acl_count = int(
+        connection.execute(
+            """
+            WITH target AS (SELECT oid FROM pg_roles WHERE rolname = %s)
+            SELECT count(*)
+            FROM pg_default_acl d
+            CROSS JOIN target
+            LEFT JOIN LATERAL aclexplode(d.defaclacl) x ON true
+            WHERE d.defaclrole = target.oid
+               OR x.grantee = target.oid
+               OR x.grantor = target.oid
+            """,
+            (BOOTSTRAP_PRINCIPAL_NAME,),
+        ).fetchone()[0]
+    )
+    memberships = tuple(
+        (str(row[0]), str(row[1]))
+        for row in connection.execute(
+            """
+            SELECT parent.rolname, member.rolname
+            FROM pg_auth_members m
+            JOIN pg_roles parent ON parent.oid = m.roleid
+            JOIN pg_roles member ON member.oid = m.member
+            WHERE parent.rolname = %s OR member.rolname = %s
+            ORDER BY parent.rolname, member.rolname
+            """,
+            (BOOTSTRAP_PRINCIPAL_NAME, BOOTSTRAP_PRINCIPAL_NAME),
+        ).fetchall()
+    )
+    owned_count = (
+        sum(owner == BOOTSTRAP_PRINCIPAL_NAME for _, owner in database_owners + schema_owners)
+        + sum(owner == BOOTSTRAP_PRINCIPAL_NAME for _, _, owner in relation_owners)
+        + sum(owner == BOOTSTRAP_PRINCIPAL_NAME for _, owner in function_owners)
+    )
+    non_admin_memberships = tuple(
+        item for item in memberships if item != ("azure_pg_admin", BOOTSTRAP_PRINCIPAL_NAME)
+    )
+    return OwnershipInventory(
+        database_owners=database_owners,
+        schema_owners=schema_owners,
+        relation_owners=relation_owners,
+        function_owners=function_owners,
+        migration_ledger=migration_ledger,
+        orphan_acl_count=acl_count,
+        orphan_default_acl_count=default_acl_count,
+        orphan_memberships=memberships,
+        orphan_dependency_count=(
+            owned_count + acl_count + default_acl_count + len(non_admin_memberships)
+        ),
+    )
+
+
 def ensure_runtime_principal(connection: Any, runtime_object_id: str) -> bool:
     record = read_entra_principal(connection, RUNTIME_PRINCIPAL_NAME)
     created = False
@@ -820,6 +1081,195 @@ def run_schema_inspection(
     )
 
 
+def _ownership_evidence(inventory: OwnershipInventory) -> dict[str, Any]:
+    relation_counts: dict[str, int] = {}
+    for _, kind, _ in inventory.relation_owners:
+        relation_counts[kind] = relation_counts.get(kind, 0) + 1
+    return {
+        "database_owners": [list(item) for item in inventory.database_owners],
+        "schema_owners": [list(item) for item in inventory.schema_owners],
+        "relation_counts_by_kind": relation_counts,
+        "relation_owner_counts": {
+            owner: sum(item[2] == owner for item in inventory.relation_owners)
+            for owner in sorted({item[2] for item in inventory.relation_owners})
+        },
+        "function_count": len(inventory.function_owners),
+        "function_owner_counts": {
+            owner: sum(item[1] == owner for item in inventory.function_owners)
+            for owner in sorted({item[1] for item in inventory.function_owners})
+        },
+        "migration_ledger": dict(inventory.migration_ledger),
+        "orphan_acl_count": inventory.orphan_acl_count,
+        "orphan_default_acl_count": inventory.orphan_default_acl_count,
+        "orphan_memberships": [list(item) for item in inventory.orphan_memberships],
+        "orphan_dependency_count": inventory.orphan_dependency_count,
+    }
+
+
+def _require_complete_reviewed_schema(connection: Any) -> SchemaSnapshot:
+    snapshot = inspect_schema(connection)
+    if plan_migrations(snapshot):
+        raise DatabaseSchemaDrift("ownership repair requires both accepted migrations")
+    if dict(snapshot.ledger) != EXPECTED_MIGRATION_HASHES:
+        raise DatabaseSchemaDrift("migration ledger differs from accepted hashes")
+    return snapshot
+
+
+def run_ownership_inspection(
+    config: JobConfig,
+    connection_factory: Callable[[], Any],
+    administrator_connection_factory: Callable[[], Any],
+    migration_root: Path,
+) -> dict[str, Any]:
+    load_migration_sources(migration_root)
+    with administrator_connection_factory() as administrator_connection:
+        if _current_user(administrator_connection) != REMEDIATION_PRINCIPAL_NAME:
+            raise IdentityMismatch("remediation connection identity is unexpected")
+        verify_remediation_administrator(administrator_connection, config)
+        all_principals = _entra_principal_names(administrator_connection, False)
+        admin_principals = _entra_principal_names(administrator_connection, True)
+        durable_mapping_absent = (
+            read_entra_principal(administrator_connection, DURABLE_OWNER_NAME) is None
+        )
+    with connection_factory() as connection:
+        if _current_user(connection) != REMEDIATION_PRINCIPAL_NAME:
+            raise IdentityMismatch("remediation connection identity is unexpected")
+        connection_tls = _connection_uses_tls(connection)
+        _require_complete_reviewed_schema(connection)
+        inventory = inspect_ownership(connection)
+        durable = read_role_record(connection, DURABLE_OWNER_NAME)
+        runtime = read_role_record(connection, RUNTIME_PRINCIPAL_NAME)
+        orphan = read_role_record(connection, BOOTSTRAP_PRINCIPAL_NAME)
+        connection.rollback()
+    if runtime is None or runtime.azure_pg_admin_member:
+        raise IdentityMismatch("runtime PostgreSQL role is absent or administrative")
+    return {
+        "classification": BootstrapClassification.PASS_OWNERSHIP_INSPECTION,
+        "connection_tls": connection_tls,
+        "database": DATABASE_NAME,
+        "durable_owner_mapping_absent": durable_mapping_absent,
+        "durable_owner_present": durable is not None,
+        "entra_admin_principals": list(admin_principals),
+        "entra_principals": list(all_principals),
+        "event": "db_ownership_inspection",
+        "migration_hashes": EXPECTED_MIGRATION_HASHES,
+        "mode": "read_only",
+        "orphan_role_present": orphan is not None,
+        "ownership": _ownership_evidence(inventory),
+        "read_only": True,
+        "runtime_non_admin": True,
+        "runtime_non_owner": all(
+            owner != RUNTIME_PRINCIPAL_NAME
+            for _, owner in inventory.schema_owners + inventory.function_owners
+        )
+        and all(owner != RUNTIME_PRINCIPAL_NAME for _, _, owner in inventory.relation_owners),
+        "token_acquired": True,
+        "token_memory_only": True,
+        "tls_required": True,
+    }
+
+
+def run_ownership_remediation(
+    config: JobConfig,
+    connection_factory: Callable[[], Any],
+    administrator_connection_factory: Callable[[], Any],
+    migration_root: Path,
+) -> dict[str, Any]:
+    load_migration_sources(migration_root)
+    with administrator_connection_factory() as administrator_connection:
+        if _current_user(administrator_connection) != REMEDIATION_PRINCIPAL_NAME:
+            raise IdentityMismatch("remediation connection identity is unexpected")
+        verify_remediation_administrator(administrator_connection, config)
+        durable = read_role_record(administrator_connection, DURABLE_OWNER_NAME)
+        if durable is None:
+            administrator_connection.execute(
+                f"CREATE ROLE {DURABLE_OWNER_NAME} "
+                "NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE "
+                "NOREPLICATION NOBYPASSRLS"
+            )
+            administrator_connection.commit()
+            durable_created = True
+        else:
+            durable_created = False
+        validate_durable_owner(read_role_record(administrator_connection, DURABLE_OWNER_NAME))
+        if read_entra_principal(administrator_connection, DURABLE_OWNER_NAME) is not None:
+            raise IdentityMismatch("durable owner must not have an Entra mapping")
+    with connection_factory() as connection:
+        if _current_user(connection) != REMEDIATION_PRINCIPAL_NAME:
+            raise IdentityMismatch("remediation connection identity is unexpected")
+        connection_tls = _connection_uses_tls(connection)
+        _require_complete_reviewed_schema(connection)
+        before = inspect_ownership(connection)
+        unexpected_memberships = tuple(
+            item
+            for item in before.orphan_memberships
+            if item != ("azure_pg_admin", BOOTSTRAP_PRINCIPAL_NAME)
+        )
+        if before.orphan_default_acl_count or unexpected_memberships:
+            raise OwnershipTransferFailure(
+                "orphan has unreviewed default privileges or role memberships"
+            )
+        connection.execute(
+            f'REASSIGN OWNED BY "{BOOTSTRAP_PRINCIPAL_NAME}" TO {DURABLE_OWNER_NAME}'
+        )
+        connection.execute(
+            f'REVOKE ALL PRIVILEGES ON DATABASE {DATABASE_NAME} FROM "{BOOTSTRAP_PRINCIPAL_NAME}"'
+        )
+        connection.execute(
+            f'REVOKE ALL PRIVILEGES ON SCHEMA trading FROM "{BOOTSTRAP_PRINCIPAL_NAME}"'
+        )
+        connection.execute(
+            f"REVOKE ALL PRIVILEGES ON ALL TABLES IN SCHEMA trading "
+            f'FROM "{BOOTSTRAP_PRINCIPAL_NAME}"'
+        )
+        connection.execute(
+            f"REVOKE ALL PRIVILEGES ON ALL SEQUENCES IN SCHEMA trading "
+            f'FROM "{BOOTSTRAP_PRINCIPAL_NAME}"'
+        )
+        connection.execute(
+            f"REVOKE ALL PRIVILEGES ON ALL FUNCTIONS IN SCHEMA trading "
+            f'FROM "{BOOTSTRAP_PRINCIPAL_NAME}"'
+        )
+        after = inspect_ownership(connection)
+        _require_complete_reviewed_schema(connection)
+        application_owners = {owner for _, owner in after.schema_owners + after.function_owners} | {
+            owner for _, _, owner in after.relation_owners
+        }
+        if application_owners != {DURABLE_OWNER_NAME}:
+            raise OwnershipTransferFailure("application objects are not durably owned")
+        if after.orphan_dependency_count:
+            raise OwnershipTransferFailure("orphan database dependencies remain")
+        connection.commit()
+    return {
+        "classification": BootstrapClassification.PASS_OWNERSHIP_REMEDIATION,
+        "connection_tls": connection_tls,
+        "database": DATABASE_NAME,
+        "durable_owner": DURABLE_OWNER_NAME,
+        "durable_owner_created": durable_created,
+        "durable_owner_entra_mapping": False,
+        "durable_owner_login": False,
+        "event": "db_ownership_remediation",
+        "migration_hashes": EXPECTED_MIGRATION_HASHES,
+        "mode": "ownership_remediation",
+        "objects_transferred": {
+            "functions": sum(
+                owner == BOOTSTRAP_PRINCIPAL_NAME for _, owner in before.function_owners
+            ),
+            "relations": sum(
+                owner == BOOTSTRAP_PRINCIPAL_NAME for _, _, owner in before.relation_owners
+            ),
+            "schemas": sum(owner == BOOTSTRAP_PRINCIPAL_NAME for _, owner in before.schema_owners),
+        },
+        "orphan_dependency_count_after": after.orphan_dependency_count,
+        "ownership_after": _ownership_evidence(after),
+        "runtime_non_admin": True,
+        "runtime_non_owner": True,
+        "token_acquired": True,
+        "token_memory_only": True,
+        "tls_required": True,
+    }
+
+
 def run_bootstrap_admin(
     config: JobConfig,
     connection_factory: Callable[[], Any],
@@ -1010,6 +1460,8 @@ def main() -> int:
             "observability-canary",
             "schema-inspect",
             "bootstrap-admin",
+            "ownership-inspect",
+            "ownership-remediate",
             "runtime-probe",
         ),
     )
@@ -1037,6 +1489,20 @@ def main() -> int:
                 )
             elif arguments.mode == "bootstrap-admin":
                 evidence = run_bootstrap_admin(
+                    config,
+                    factory,
+                    factory.administrator_connection,
+                    arguments.migration_root,
+                )
+            elif arguments.mode == "ownership-inspect":
+                evidence = run_ownership_inspection(
+                    config,
+                    factory,
+                    factory.administrator_connection,
+                    arguments.migration_root,
+                )
+            elif arguments.mode == "ownership-remediate":
+                evidence = run_ownership_remediation(
                     config,
                     factory,
                     factory.administrator_connection,

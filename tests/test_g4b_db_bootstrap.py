@@ -13,27 +13,33 @@ import pytest
 
 from src.ig_trader.db_bootstrap import (
     BOOTSTRAP_PRINCIPAL_NAME,
+    DURABLE_OWNER_NAME,
     EXPECTED_MIGRATION_HASHES,
     MIGRATION_001,
     MIGRATION_002,
+    REMEDIATION_PRINCIPAL_NAME,
     RUNTIME_PRINCIPAL_NAME,
     BootstrapError,
     DatabaseSchemaDrift,
     IdentityMismatch,
     JobConfig,
     MigrationState,
+    OwnershipTransferFailure,
     PrincipalRecord,
     PrivilegeMismatch,
     PrivilegeSnapshot,
+    RoleRecord,
     SchemaClassification,
     SchemaSnapshot,
     apply_required_migrations,
     classify_schema,
     emit_sanitized_evidence,
+    inspect_ownership,
     inspect_schema,
     load_migration_sources,
     plan_migrations,
     schema_inspection_evidence,
+    validate_durable_owner,
     validate_execution_nonce,
     validate_runtime_principal,
     validate_runtime_privileges,
@@ -50,6 +56,7 @@ POSTGRES_DSN_ENV = "TEST_POSTGRES_DSN"
 RUNTIME_OBJECT_ID = "00000000-0000-0000-0000-000000000101"
 BOOTSTRAP_OBJECT_ID = "00000000-0000-0000-0000-000000000202"
 CLIENT_ID = "00000000-0000-0000-0000-000000000303"
+REMEDIATION_OBJECT_ID = "00000000-0000-0000-0000-000000000404"
 
 
 def _markers(*definitions: object) -> frozenset[str]:
@@ -65,15 +72,30 @@ def _ledger(*versions: str) -> dict[str, str]:
 
 def _environment(mode: str) -> dict[str, str]:
     bootstrap = mode in {"bootstrap-admin", "schema-inspect"}
+    remediation = mode in {"ownership-inspect", "ownership-remediate"}
     values = {
         "AZURE_CLIENT_ID": CLIENT_ID,
-        "JOB_IDENTITY_NAME": (BOOTSTRAP_PRINCIPAL_NAME if bootstrap else RUNTIME_PRINCIPAL_NAME),
-        "JOB_UAMI_OBJECT_ID": BOOTSTRAP_OBJECT_ID if bootstrap else RUNTIME_OBJECT_ID,
+        "JOB_IDENTITY_NAME": (
+            BOOTSTRAP_PRINCIPAL_NAME
+            if bootstrap
+            else REMEDIATION_PRINCIPAL_NAME
+            if remediation
+            else RUNTIME_PRINCIPAL_NAME
+        ),
+        "JOB_UAMI_OBJECT_ID": (
+            BOOTSTRAP_OBJECT_ID
+            if bootstrap
+            else REMEDIATION_OBJECT_ID
+            if remediation
+            else RUNTIME_OBJECT_ID
+        ),
         "POSTGRES_DATABASE": "ig_trader",
         "POSTGRES_HOST": "example.postgres.database.azure.com",
     }
-    if bootstrap:
+    if bootstrap or remediation:
         values["RUNTIME_UAMI_OBJECT_ID"] = RUNTIME_OBJECT_ID
+    if remediation:
+        values["ORPHAN_UAMI_OBJECT_ID"] = BOOTSTRAP_OBJECT_ID
     return values
 
 
@@ -253,6 +275,32 @@ def test_schema_inspection_uses_bootstrap_identity_without_runtime_authority() -
     assert config.runtime_identity_object_id is None
 
 
+def test_ownership_repair_requires_distinct_finite_remediation_identity() -> None:
+    config = JobConfig.from_environment("ownership-remediate", _environment("ownership-remediate"))
+
+    assert config.database_user == REMEDIATION_PRINCIPAL_NAME
+    assert config.job_identity_object_id == REMEDIATION_OBJECT_ID
+    assert config.runtime_identity_object_id == RUNTIME_OBJECT_ID
+    assert config.orphan_identity_object_id == BOOTSTRAP_OBJECT_ID
+
+
+def test_durable_owner_must_be_nologin_and_non_admin() -> None:
+    safe = RoleRecord(
+        role_name=DURABLE_OWNER_NAME,
+        can_login=False,
+        is_superuser=False,
+        can_create_role=False,
+        can_create_database=False,
+        can_replicate=False,
+        bypasses_rls=False,
+        azure_pg_admin_member=False,
+    )
+
+    validate_durable_owner(safe)
+    with pytest.raises(OwnershipTransferFailure, match="durable owner"):
+        validate_durable_owner(replace(safe, can_login=True))
+
+
 def test_runtime_identity_cannot_run_bootstrap_admin() -> None:
     environment = _environment("runtime-probe")
     environment["RUNTIME_UAMI_OBJECT_ID"] = RUNTIME_OBJECT_ID
@@ -400,6 +448,10 @@ def test_cloud_bootstrap_source_has_no_sqlite_fallback_or_broker_import() -> Non
     assert '"token_memory_only": True' in source
     assert '"runtime_privileges": _privilege_evidence(privileges)' in source
     assert '"observability-canary"' in source
+    assert '"ownership-inspect"' in source
+    assert '"ownership-remediate"' in source
+    assert "REASSIGN OWNED BY" in source
+    assert "DROP OWNED" not in source
     assert '"event": "db_schema_inspection"' in source
     assert '"execution_nonce"' in source
     assert "print(_EVIDENCE_PREFIX + serialized" in source
@@ -505,3 +557,8 @@ def test_real_postgresql_blank_bootstrap_applies_and_verifies_both_migrations() 
         applied = apply_required_migrations(connection, sources, "ephemeral-ci-bootstrap")
         assert applied == (MIGRATION_001.version, MIGRATION_002.version)
         assert plan_migrations(inspect_schema(connection)) == ()
+        ownership = inspect_ownership(connection)
+        assert ownership.schema_owners == (("trading", "postgres"),)
+        assert len(ownership.relation_owners) == 11
+        assert len(ownership.function_owners) == 6
+        assert dict(ownership.migration_ledger) == EXPECTED_MIGRATION_HASHES
