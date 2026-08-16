@@ -724,6 +724,18 @@ def validate_runtime_privileges(snapshot: PrivilegeSnapshot) -> None:
         raise PrivilegeMismatch("runtime database privileges differ from the approved set")
 
 
+def _privilege_evidence(snapshot: PrivilegeSnapshot) -> dict[str, Any]:
+    return {
+        "database_connect": snapshot.database_connect,
+        "database_create": snapshot.database_create,
+        "missing_required": list(snapshot.missing_required),
+        "owned_object_count": snapshot.owned_object_count,
+        "prohibited_present": list(snapshot.prohibited_present),
+        "schema_create": snapshot.schema_create,
+        "schema_usage": snapshot.schema_usage,
+    }
+
+
 def _current_user(connection: Any) -> str:
     return str(connection.execute("SELECT current_user").fetchone()[0])
 
@@ -758,8 +770,12 @@ def run_schema_inspection(
             migration.version: snapshot.state(migration).value for migration in MIGRATIONS
         },
         "planned_migrations": [migration.version for migration in planned],
+        "read_only": True,
         "schema_classification": classification,
+        "schema_constraints_verified": True,
         "token_acquired": True,
+        "token_memory_only": True,
+        "tls_required": True,
     }
 
 
@@ -815,7 +831,10 @@ def run_bootstrap_admin(
         "principal_object_id_verified": True,
         "principal_type": "service",
         "runtime_principal": RUNTIME_PRINCIPAL_NAME,
+        "runtime_privileges": _privilege_evidence(privileges),
         "token_acquired": True,
+        "token_memory_only": True,
+        "tls_required": True,
     }
 
 
@@ -826,7 +845,8 @@ def run_runtime_probe(
     with connection_factory() as connection:
         if _current_user(connection) != RUNTIME_PRINCIPAL_NAME:
             raise IdentityMismatch("runtime connection identity is unexpected")
-        validate_runtime_privileges(read_runtime_privileges(connection))
+        privileges = read_runtime_privileges(connection)
+        validate_runtime_privileges(privileges)
 
     instance = _probe_instance_id(os.environ)
     store = PostgresExecutionLeaseStore(connection_factory)
@@ -860,13 +880,21 @@ def run_runtime_probe(
         "classification": BootstrapClassification.PASS_RUNTIME_PROBE,
         "authorized_for_broker_execution": False,
         "database": DATABASE_NAME,
+        "initial_fencing_token": lease.fencing_token,
         "lease_acquired": True,
         "lease_released": True,
         "lease_renewed": True,
         "principal_admin": False,
         "runtime_principal": RUNTIME_PRINCIPAL_NAME,
+        "runtime_privileges": _privilege_evidence(privileges),
         "stale_fencing_token_rejected": stale_rejected,
+        "successor_fencing_token": successor.fencing_token,
+        "successor_token_strictly_newer": successor.fencing_token > lease.fencing_token,
         "token_acquired": True,
+        "token_memory_only": True,
+        "tls_required": True,
+        "used_password": False,
+        "used_sqlite_fallback": False,
     }
 
 

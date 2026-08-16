@@ -296,6 +296,10 @@ def test_cloud_bootstrap_source_has_no_sqlite_fallback_or_broker_import() -> Non
     assert "from ig_trader.execution import" not in source
     assert "lightstreamer" not in source.casefold()
     assert 'return self.connect_database("postgres")' in source
+    assert '"initial_fencing_token": lease.fencing_token' in source
+    assert '"successor_fencing_token": successor.fencing_token' in source
+    assert '"token_memory_only": True' in source
+    assert '"runtime_privileges": _privilege_evidence(privileges)' in source
 
 
 def test_bootstrap_image_contains_only_required_project_inputs() -> None:
