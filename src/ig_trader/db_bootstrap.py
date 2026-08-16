@@ -1200,14 +1200,16 @@ def _runtime_privilege_evidence(audit: RuntimePrivilegeAudit) -> dict[str, Any]:
     }
 
 
-def read_reject_function_provenance(connection: Any) -> FunctionPrivilegeProvenance:
+def read_function_provenance(connection: Any, signature: str) -> FunctionPrivilegeProvenance:
     row = connection.execute(
         """
         SELECT owner_role.rolname,
                p.proacl::text,
                EXISTS (
                    SELECT 1
-                   FROM aclexplode(COALESCE(p.proacl, '{}'::aclitem[])) acl
+                   FROM aclexplode(
+                       COALESCE(p.proacl, acldefault('f', p.proowner))
+                   ) acl
                    JOIN pg_roles grantee ON grantee.oid = acl.grantee
                    WHERE grantee.rolname = %s AND acl.privilege_type = 'EXECUTE'
                ),
@@ -1227,18 +1229,20 @@ def read_reject_function_provenance(connection: Any) -> FunctionPrivilegeProvena
             RUNTIME_PRINCIPAL_NAME,
             RUNTIME_PRINCIPAL_NAME,
             RUNTIME_PRINCIPAL_NAME,
-            REJECT_FUNCTION_SIGNATURE,
+            signature,
         ),
     ).fetchone()
     if row is None:
-        raise DatabaseSchemaDrift("append-only rejection function is absent")
+        raise DatabaseSchemaDrift("reviewed function is absent")
     role_sources = tuple(
         str(item[0])
         for item in connection.execute(
             """
             SELECT DISTINCT grantee.rolname
             FROM pg_proc p
-            CROSS JOIN LATERAL aclexplode(COALESCE(p.proacl, '{}'::aclitem[])) acl
+            CROSS JOIN LATERAL aclexplode(
+                COALESCE(p.proacl, acldefault('f', p.proowner))
+            ) acl
             JOIN pg_roles grantee ON grantee.oid = acl.grantee
             WHERE p.oid = to_regprocedure(%s)
               AND acl.privilege_type = 'EXECUTE'
@@ -1247,7 +1251,7 @@ def read_reject_function_provenance(connection: Any) -> FunctionPrivilegeProvena
             ORDER BY grantee.rolname
             """,
             (
-                REJECT_FUNCTION_SIGNATURE,
+                signature,
                 RUNTIME_PRINCIPAL_NAME,
                 RUNTIME_PRINCIPAL_NAME,
             ),
@@ -1312,6 +1316,10 @@ def read_reject_function_provenance(connection: Any) -> FunctionPrivilegeProvena
         durable_owner_future_public_execute=future_public,
         classification=classification,
     )
+
+
+def read_reject_function_provenance(connection: Any) -> FunctionPrivilegeProvenance:
+    return read_function_provenance(connection, REJECT_FUNCTION_SIGNATURE)
 
 
 def _function_provenance_evidence(

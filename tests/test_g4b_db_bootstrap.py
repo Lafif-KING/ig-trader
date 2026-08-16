@@ -40,6 +40,7 @@ from src.ig_trader.db_bootstrap import (
     load_migration_sources,
     plan_migrations,
     read_exact_runtime_privileges,
+    read_function_provenance,
     read_reject_function_provenance,
     schema_inspection_evidence,
     validate_durable_owner,
@@ -614,3 +615,49 @@ def test_real_postgresql_blank_bootstrap_applies_and_verifies_both_migrations() 
         assert provenance.direct_runtime_execute is False
         assert provenance.role_execute_sources == ()
         assert provenance.runtime_is_owner is False
+        assert connection.execute(
+            "SELECT proacl IS NULL FROM pg_proc WHERE oid = "
+            "to_regprocedure('trading.reject_append_only_mutation()')"
+        ).fetchone()[0]
+
+        approved_signatures = (
+            "trading.acquire_execution_lease(text,text,double precision)",
+            "trading.renew_execution_lease(text,text,bigint,double precision)",
+            "trading.release_execution_lease(text,text,bigint)",
+            "trading.assert_execution_fence(text,text,bigint,text)",
+            "trading.require_current_execution_fence()",
+        )
+        for signature in approved_signatures:
+            approved = read_function_provenance(connection, signature)
+            assert approved.classification == "NONE"
+            assert approved.public_execute is False
+            assert approved.direct_runtime_execute is False
+
+        connection.execute(
+            "REVOKE EXECUTE ON FUNCTION trading.reject_append_only_mutation() FROM PUBLIC"
+        )
+        revoked = read_reject_function_provenance(connection)
+        assert revoked.classification == "NONE"
+        assert revoked.public_execute is False
+        assert revoked.direct_runtime_execute is False
+
+        connection.execute(
+            "GRANT EXECUTE ON FUNCTION trading.reject_append_only_mutation() TO "
+            f'"{RUNTIME_PRINCIPAL_NAME}"'
+        )
+        direct = read_reject_function_provenance(connection)
+        assert direct.classification == "DIRECT_GRANT"
+        assert direct.direct_runtime_execute is True
+        assert direct.public_execute is False
+
+        connection.execute(
+            "REVOKE EXECUTE ON FUNCTION trading.reject_append_only_mutation() FROM "
+            f'"{RUNTIME_PRINCIPAL_NAME}"'
+        )
+        connection.execute(
+            "GRANT EXECUTE ON FUNCTION trading.reject_append_only_mutation() TO PUBLIC"
+        )
+        public = read_reject_function_provenance(connection)
+        assert public.classification == "PUBLIC_GRANT"
+        assert public.public_execute is True
+        assert public.direct_runtime_execute is False
