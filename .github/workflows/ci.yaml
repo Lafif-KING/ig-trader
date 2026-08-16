@@ -2,7 +2,7 @@ name: Cloud foundation CI
 
 on:
   push:
-    branches: ["main", "codex/g4a-01-cloud-foundation"]
+    branches: ["main", "codex/g4a-01-cloud-foundation", "codex/g4b-02a1-operational-alerts"]
   pull_request:
     branches: ["main"]
   workflow_dispatch:
@@ -71,6 +71,12 @@ jobs:
             tests/test_cloud_foundation_contracts.py \
             tests/test_g4b_c2_stage_isolation.py
 
+      - name: G4B operations focused tests
+        run: |
+          poetry run pytest -q \
+            --junitxml=artifacts/ci/tests-g4b-ops.xml \
+            tests/test_g4b_ops_monitoring.py
+
       - name: Ruff
         run: poetry run ruff check .
 
@@ -81,6 +87,8 @@ jobs:
         run: poetry run pre-commit run --all-files
 
       - name: Validate Azure Bicep
+        env:
+          AZURE_ALERT_EMAIL: project-operator@example.invalid
         run: |
           az bicep install --version v0.45.15
           az bicep lint --file infra/azure/foundation.bicep
@@ -88,11 +96,13 @@ jobs:
           az bicep lint --file infra/azure/dev-shadow-c2.bicep
           az bicep lint --file infra/azure/dev-shadow-foundation.bicep
           az bicep lint --file infra/azure/dev-shadow-app.bicep
+          az bicep lint --file infra/azure/dev-shadow-ops.bicep
           az bicep build --file infra/azure/foundation.bicep --outfile artifacts/ci/foundation.json
           az bicep build --file infra/azure/app.bicep --outfile artifacts/ci/app.json
           az bicep build --file infra/azure/dev-shadow-c2.bicep --outfile artifacts/ci/dev-shadow-c2.json
           az bicep build --file infra/azure/dev-shadow-foundation.bicep --outfile artifacts/ci/dev-shadow-foundation.json
           az bicep build --file infra/azure/dev-shadow-app.bicep --outfile artifacts/ci/dev-shadow-app.json
+          az bicep build --file infra/azure/dev-shadow-ops.bicep --outfile artifacts/ci/dev-shadow-ops.json
           az bicep build-params \
             --file infra/azure/foundation.parameters.example.bicepparam \
             --outfile artifacts/ci/foundation.parameters.json
@@ -108,7 +118,10 @@ jobs:
           az bicep build-params \
             --file infra/azure/dev-shadow-c2.parameters.bicepparam \
             --outfile artifacts/ci/dev-shadow-c2.parameters.json
-          printf '{"compiler":"bicep-v0.45.15","parameter_files":5,"status":"pass"}\n' \
+          az bicep build-params \
+            --file infra/azure/dev-shadow-ops.parameters.bicepparam \
+            --outfile artifacts/ci/dev-shadow-ops.parameters.json
+          printf '{"compiler":"bicep-v0.45.15","parameter_files":6,"status":"pass"}\n' \
             > artifacts/ci/bicep-result.json
 
       - name: Secret scan
