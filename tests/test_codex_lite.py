@@ -18,7 +18,12 @@ def test_project_rules_and_state_have_required_safety_markers() -> None:
     state = (ROOT / "docs/PROJECT_STATE.md").read_text()
     for marker in ("NO_EXECUTION", "Never print", "fencing token", "least privilege"):
         assert marker in agents
-    for marker in ("e7f37c143baf0a6ca5819144c2f7780eef72b76d", "missing=0", "NO_EXECUTION"):
+    for marker in (
+        "Authoritative branch: `origin/main`",
+        "Current source SHA: verify with `git rev-parse origin/main`.",
+        "missing=0",
+        "NO_EXECUTION",
+    ):
         assert marker in state
     forbidden = ("password=", "client_secret", "access_token", "IG_API_KEY")
     combined = (agents + state).lower()
