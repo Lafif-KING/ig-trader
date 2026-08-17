@@ -111,7 +111,7 @@ jobs:
         run: |
           timeout --signal=TERM --kill-after=10s 60s poetry run pytest -q \
             --junitxml=artifacts/ci/tests-g4b-db-bootstrap-postgres.xml \
-            tests/test_g4b_db_bootstrap.py::test_real_postgresql_blank_bootstrap_applies_and_verifies_both_migrations
+            tests/test_g4b_db_bootstrap.py::test_real_postgresql_blank_bootstrap_applies_and_verifies_all_migrations
 
       - name: G4B PostgreSQL fencing proof
         env:
