@@ -619,11 +619,13 @@ def _required_local_postgres_dsn() -> str:
 
 
 def test_real_postgresql_blank_bootstrap_applies_and_verifies_all_migrations() -> None:
-    dsn = _required_local_postgres_dsn()
+    admin_dsn = _required_local_postgres_dsn()
     import psycopg
+    from psycopg.conninfo import make_conninfo
 
-    with psycopg.connect(dsn, autocommit=True) as admin:
-        admin.execute("DROP SCHEMA IF EXISTS trading CASCADE")
+    with psycopg.connect(admin_dsn, autocommit=True) as admin:
+        admin.execute("DROP DATABASE IF EXISTS ig_trader")
+        admin.execute("CREATE DATABASE ig_trader")
         admin.execute(
             "DO $$ BEGIN CREATE ROLE azure_pg_admin NOLOGIN; "
             "EXCEPTION WHEN duplicate_object THEN NULL; END $$"
@@ -632,7 +634,9 @@ def test_real_postgresql_blank_bootstrap_applies_and_verifies_all_migrations() -
             f'DO $$ BEGIN CREATE ROLE "{RUNTIME_PRINCIPAL_NAME}" LOGIN; '
             "EXCEPTION WHEN duplicate_object THEN NULL; END $$"
         )
-    with psycopg.connect(dsn) as connection:
+    app_dsn = make_conninfo(admin_dsn, dbname="ig_trader")
+    with psycopg.connect(app_dsn) as connection:
+        connection.execute("DROP SCHEMA IF EXISTS trading CASCADE")
         sources = load_migration_sources(MIGRATION_ROOT)
         applied = apply_required_migrations(connection, sources, "ephemeral-ci-bootstrap")
         assert applied == (MIGRATION_001.version, MIGRATION_002.version, MIGRATION_003.version)
@@ -722,7 +726,7 @@ def test_real_postgresql_blank_bootstrap_applies_and_verifies_all_migrations() -
             "UPDATE",
         )
 
-        lease_store = PostgresExecutionLeaseStore(lambda: psycopg.connect(dsn))
+        lease_store = PostgresExecutionLeaseStore(lambda: psycopg.connect(app_dsn))
         leader = lease_store.acquire(EXECUTION_LEASE_NAME, "shadow-ci-leader", 30)
         assert leader is not None
         intent_id, position_id = uuid4(), uuid4()
