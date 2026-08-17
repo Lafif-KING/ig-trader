@@ -51,7 +51,8 @@ from src.ig_trader.db_bootstrap import (
     validate_runtime_principal,
     validate_runtime_privileges,
     write_sanitized_evidence,
-)from src.ig_trader.db_bootstrap import main as db_bootstrap_main
+)
+from src.ig_trader.db_bootstrap import main as db_bootstrap_main
 from src.ig_trader.execution_lease import (
     EXECUTION_LEASE_NAME,
     FencedOperation,
