@@ -244,6 +244,7 @@ jobs:
           sha256sum Dockerfile Dockerfile.db-bootstrap poetry.lock \
             migrations/postgresql/001_execution_state.sql \
             migrations/postgresql/002_execution_lease_fencing.sql \
+            migrations/postgresql/003_shadow_position_state.sql \
             > artifacts/ci/build-inputs.sha256
 
       - name: Inspect database bootstrap image and safe CLI

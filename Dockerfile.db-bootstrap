@@ -40,7 +40,7 @@ RUN groupadd --gid 10001 app && \
 WORKDIR /app
 COPY --from=builder --chown=10001:10001 /app/.venv ./.venv
 COPY --from=builder --chown=10001:10001 /app/src/ig_trader ./src/ig_trader
-COPY --chown=10001:10001 migrations/postgresql/001_execution_state.sql migrations/postgresql/002_execution_lease_fencing.sql ./migrations/postgresql/
+COPY --chown=10001:10001 migrations/postgresql/001_execution_state.sql migrations/postgresql/002_execution_lease_fencing.sql migrations/postgresql/003_shadow_position_state.sql ./migrations/postgresql/
 
 USER 10001:10001
 STOPSIGNAL SIGTERM

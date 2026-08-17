@@ -39,6 +39,9 @@ EXPECTED_MIGRATION_HASHES = {
     "002_execution_lease_fencing": (
         "731b918b573ee232aab3fa709e7a41b5ac03e11f4f81d08458f8fcefcb16599c"
     ),
+    "003_shadow_position_state": (
+        "2fcd75c532e05a5bf3639b6667a66432261a732332e18e84e08af862033cc421"
+    ),
 }
 
 _POSTGRES_HOST_PATTERN = re.compile(
@@ -118,7 +121,8 @@ class SchemaClassification(StrEnum):
 
     BLANK = "BLANK"
     MIGRATION_001_COMPLETE_ONLY = "001_COMPLETE_ONLY"
-    MIGRATIONS_001_AND_002_COMPLETE = "001_AND_002_COMPLETE"
+    MIGRATIONS_001_AND_002_COMPLETE_003_ABSENT = "001_AND_002_COMPLETE_003_ABSENT"
+    MIGRATIONS_001_TO_003_COMPLETE = "001_TO_003_COMPLETE"
 
 
 @dataclass(frozen=True)
@@ -204,7 +208,25 @@ MIGRATION_002 = MigrationDefinition(
     ),
 )
 
-MIGRATIONS = (MIGRATION_001, MIGRATION_002)
+MIGRATION_003 = MigrationDefinition(
+    version="003_shadow_position_state",
+    filename="003_shadow_position_state.sql",
+    checksum_sha256=EXPECTED_MIGRATION_HASHES["003_shadow_position_state"],
+    required_markers=frozenset(
+        {
+            "relation:shadow_position_state",
+            "constraint-count:shadow_position_state:c:11",
+            "constraint-count:shadow_position_state:f:1",
+            "constraint-count:shadow_position_state:p:1",
+            "constraint-count:shadow_position_state:u:1",
+            "column:shadow_position_state.intent_id:not-null",
+            "column:shadow_position_state.fencing_token:not-null",
+            "trigger:shadow_position_state_require_fence",
+        }
+    ),
+)
+
+MIGRATIONS = (MIGRATION_001, MIGRATION_002, MIGRATION_003)
 _KNOWN_MARKERS = frozenset().union(*(migration.required_markers for migration in MIGRATIONS))
 
 
@@ -514,6 +536,17 @@ def inspect_schema(connection: Any) -> SchemaSnapshot:
     ).fetchone()
     if heartbeat and heartbeat[0] == "NO":
         markers.add("column:worker_leases.heartbeat_at:not-null")
+    for table, column in (
+        ("shadow_position_state", "intent_id"),
+        ("shadow_position_state", "fencing_token"),
+    ):
+        row = connection.execute(
+            "SELECT is_nullable FROM information_schema.columns "
+            "WHERE table_schema = 'trading' AND table_name = %s AND column_name = %s",
+            (table, column),
+        ).fetchone()
+        if row and row[0] == "NO":
+            markers.add(f"column:{table}.{column}:not-null")
 
     ledger: dict[str, str] = {}
     if "relation:schema_migrations" in markers:
@@ -545,12 +578,17 @@ def plan_migrations(snapshot: SchemaSnapshot) -> tuple[MigrationDefinition, ...]
 
     first = states[MIGRATION_001.version]
     second = states[MIGRATION_002.version]
+    third = states[MIGRATION_003.version]
     if first is MigrationState.ABSENT and second is not MigrationState.ABSENT:
+        raise DatabaseSchemaDrift("migration ordering is invalid")
+    if second is MigrationState.ABSENT and third is not MigrationState.ABSENT:
         raise DatabaseSchemaDrift("migration ordering is invalid")
     if first is MigrationState.ABSENT:
         return MIGRATIONS
     if second is MigrationState.ABSENT:
-        return (MIGRATION_002,)
+        return (MIGRATION_002, MIGRATION_003)
+    if third is MigrationState.ABSENT:
+        return (MIGRATION_003,)
     return ()
 
 
@@ -560,10 +598,12 @@ def classify_schema(snapshot: SchemaSnapshot) -> SchemaClassification:
     planned = plan_migrations(snapshot)
     if planned == MIGRATIONS:
         return SchemaClassification.BLANK
-    if planned == (MIGRATION_002,):
+    if planned == (MIGRATION_002, MIGRATION_003):
         return SchemaClassification.MIGRATION_001_COMPLETE_ONLY
+    if planned == (MIGRATION_003,):
+        return SchemaClassification.MIGRATIONS_001_AND_002_COMPLETE_003_ABSENT
     if not planned:
-        return SchemaClassification.MIGRATIONS_001_AND_002_COMPLETE
+        return SchemaClassification.MIGRATIONS_001_TO_003_COMPLETE
     raise DatabaseSchemaDrift("migration plan does not match an accepted state")
 
 
@@ -906,6 +946,7 @@ GRANT_STATEMENTS = (
         "GRANT SELECT ON trading.schema_migrations, trading.worker_leases, "
         "trading.execution_cycle_claims, trading.trade_intents, "
         "trading.lifecycle_events, trading.broker_references, trading.position_state, "
+        "trading.shadow_position_state, "
         f"trading.reconciliation_state, trading.evidence_metadata TO {_ROLE}"
     ),
     f"GRANT INSERT, UPDATE ON trading.execution_cycle_claims TO {_ROLE}",
@@ -913,6 +954,7 @@ GRANT_STATEMENTS = (
     f"GRANT INSERT ON trading.lifecycle_events TO {_ROLE}",
     f"GRANT INSERT ON trading.broker_references TO {_ROLE}",
     f"GRANT INSERT, UPDATE ON trading.position_state TO {_ROLE}",
+    f"GRANT INSERT, UPDATE ON trading.shadow_position_state TO {_ROLE}",
     f"GRANT INSERT, UPDATE ON trading.reconciliation_state TO {_ROLE}",
     f"GRANT INSERT ON trading.evidence_metadata TO {_ROLE}",
     f"GRANT USAGE, SELECT ON SEQUENCE trading.lifecycle_events_sequence_seq TO {_ROLE}",
@@ -943,6 +985,7 @@ _TABLE_PRIVILEGES = {
     "lifecycle_events": {"SELECT", "INSERT"},
     "broker_references": {"SELECT", "INSERT"},
     "position_state": {"SELECT", "INSERT", "UPDATE"},
+    "shadow_position_state": {"SELECT", "INSERT", "UPDATE"},
     "reconciliation_state": {"SELECT", "INSERT", "UPDATE"},
     "evidence_metadata": {"SELECT", "INSERT"},
 }
@@ -1700,6 +1743,8 @@ def schema_inspection_evidence(
         "migration_001_expected_hash": MIGRATION_001.checksum_sha256,
         "migration_002": snapshot.state(MIGRATION_002).value,
         "migration_002_expected_hash": MIGRATION_002.checksum_sha256,
+        "migration_003": snapshot.state(MIGRATION_003).value,
+        "migration_003_expected_hash": MIGRATION_003.checksum_sha256,
         "migration_hashes": {
             source.definition.version: source.definition.checksum_sha256 for source in sources
         },

@@ -333,6 +333,7 @@ jobs:
               src/ig_trader/execution_lease.py \
               migrations/postgresql/001_execution_state.sql \
               migrations/postgresql/002_execution_lease_fencing.sql \
+              migrations/postgresql/003_shadow_position_state.sql \
               > artifacts/image-publish/build-inputs.sha256
           fi
 

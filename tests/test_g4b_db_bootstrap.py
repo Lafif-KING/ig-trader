@@ -7,6 +7,7 @@ import os
 import sys
 from dataclasses import replace
 from pathlib import Path
+from datetime import UTC, datetime
 from uuid import uuid4
 
 import pytest
@@ -18,6 +19,7 @@ from src.ig_trader.db_bootstrap import (
     GRANT_REPAIR_PRINCIPAL_NAME,
     MIGRATION_001,
     MIGRATION_002,
+    MIGRATION_003,
     REMEDIATION_PRINCIPAL_NAME,
     RUNTIME_PRINCIPAL_NAME,
     BootstrapError,
@@ -33,6 +35,7 @@ from src.ig_trader.db_bootstrap import (
     SchemaClassification,
     SchemaSnapshot,
     apply_required_migrations,
+    apply_runtime_grants,
     classify_schema,
     emit_sanitized_evidence,
     inspect_ownership,
@@ -48,6 +51,12 @@ from src.ig_trader.db_bootstrap import (
     validate_runtime_principal,
     validate_runtime_privileges,
     write_sanitized_evidence,
+)
+from src.ig_trader.execution_lease import (
+    EXECUTION_LEASE_NAME,
+    FencedOperation,
+    FencingRejected,
+    PostgresExecutionLeaseStore,
 )
 from src.ig_trader.db_bootstrap import (
     main as db_bootstrap_main,
@@ -112,32 +121,45 @@ def _environment(mode: str) -> dict[str, str]:
     return values
 
 
-def test_blank_database_plans_001_then_002() -> None:
+def test_blank_database_plans_001_then_003() -> None:
     snapshot = SchemaSnapshot(markers=frozenset(), ledger={})
 
-    assert plan_migrations(snapshot) == (MIGRATION_001, MIGRATION_002)
+    assert plan_migrations(snapshot) == (MIGRATION_001, MIGRATION_002, MIGRATION_003)
     assert snapshot.state(MIGRATION_001) is MigrationState.ABSENT
     assert classify_schema(snapshot) is SchemaClassification.BLANK
 
 
-def test_001_present_and_002_absent_plans_only_002() -> None:
+def test_001_present_and_002_absent_plans_002_then_003() -> None:
     snapshot = SchemaSnapshot(
         markers=_markers(MIGRATION_001),
         ledger=_ledger(MIGRATION_001.version),
     )
 
-    assert plan_migrations(snapshot) == (MIGRATION_002,)
+    assert plan_migrations(snapshot) == (MIGRATION_002, MIGRATION_003)
     assert classify_schema(snapshot) is SchemaClassification.MIGRATION_001_COMPLETE_ONLY
 
 
-def test_both_migrations_present_are_verified_without_reapplication() -> None:
+def test_001_and_002_complete_marks_003_absent() -> None:
     snapshot = SchemaSnapshot(
         markers=_markers(MIGRATION_001, MIGRATION_002),
         ledger=_ledger(MIGRATION_001.version, MIGRATION_002.version),
     )
 
+    assert plan_migrations(snapshot) == (MIGRATION_003,)
+    assert (
+        classify_schema(snapshot)
+        is SchemaClassification.MIGRATIONS_001_AND_002_COMPLETE_003_ABSENT
+    )
+
+
+def test_all_migrations_present_are_verified_without_reapplication() -> None:
+    snapshot = SchemaSnapshot(
+        markers=_markers(MIGRATION_001, MIGRATION_002, MIGRATION_003),
+        ledger=_ledger(MIGRATION_001.version, MIGRATION_002.version, MIGRATION_003.version),
+    )
+
     assert plan_migrations(snapshot) == ()
-    assert classify_schema(snapshot) is SchemaClassification.MIGRATIONS_001_AND_002_COMPLETE
+    assert classify_schema(snapshot) is SchemaClassification.MIGRATIONS_001_TO_003_COMPLETE
 
 
 def test_partial_001_fails_closed() -> None:
@@ -154,6 +176,16 @@ def test_partial_002_fails_closed() -> None:
     snapshot = SchemaSnapshot(
         markers=_markers(MIGRATION_001) | {"relation:worker_lease_fencing_token_seq"},
         ledger=_ledger(MIGRATION_001.version),
+    )
+
+    with pytest.raises(DatabaseSchemaDrift):
+        plan_migrations(snapshot)
+
+
+def test_partial_003_fails_closed() -> None:
+    snapshot = SchemaSnapshot(
+        markers=_markers(MIGRATION_001, MIGRATION_002) | {"relation:shadow_position_state"},
+        ledger=_ledger(MIGRATION_001.version, MIGRATION_002.version),
     )
 
     with pytest.raises(DatabaseSchemaDrift):
@@ -178,9 +210,9 @@ def test_complete_schema_without_reviewed_ledger_hash_fails_closed() -> None:
 
 
 def test_migration_hash_mismatch_fails_before_database_access(tmp_path: Path) -> None:
-    for name in (MIGRATION_001.filename, MIGRATION_002.filename):
+    for name in (MIGRATION_001.filename, MIGRATION_002.filename, MIGRATION_003.filename):
         (tmp_path / name).write_bytes((MIGRATION_ROOT / name).read_bytes())
-    (tmp_path / MIGRATION_002.filename).write_text("BEGIN;\nCOMMIT;\n", encoding="utf-8")
+    (tmp_path / MIGRATION_003.filename).write_text("BEGIN;\nCOMMIT;\n", encoding="utf-8")
 
     with pytest.raises(DatabaseSchemaDrift):
         load_migration_sources(tmp_path)
@@ -424,7 +456,7 @@ def test_schema_inspection_evidence_has_required_read_only_contract() -> None:
         SchemaSnapshot(markers=frozenset(), ledger={}),
         sources,
         SchemaClassification.BLANK,
-        (MIGRATION_001, MIGRATION_002),
+        (MIGRATION_001, MIGRATION_002, MIGRATION_003),
         connection_tls=True,
     )
 
@@ -438,15 +470,19 @@ def test_schema_inspection_evidence_has_required_read_only_contract() -> None:
         "migration_001_expected_hash": EXPECTED_MIGRATION_HASHES["001_execution_state"],
         "migration_002": "ABSENT",
         "migration_002_expected_hash": EXPECTED_MIGRATION_HASHES["002_execution_lease_fencing"],
+        "migration_003": "ABSENT",
+        "migration_003_expected_hash": EXPECTED_MIGRATION_HASHES["003_shadow_position_state"],
         "migration_hashes": EXPECTED_MIGRATION_HASHES,
         "migration_state": {
             "001_execution_state": "ABSENT",
             "002_execution_lease_fencing": "ABSENT",
+            "003_shadow_position_state": "ABSENT",
         },
         "mode": "read_only",
         "planned_migrations": [
             "001_execution_state",
             "002_execution_lease_fencing",
+            "003_shadow_position_state",
         ],
         "read_only": True,
         "schema_classification": "BLANK",
@@ -501,6 +537,7 @@ def test_bootstrap_image_contains_only_required_project_inputs() -> None:
     assert 'ENTRYPOINT ["python", "-m", "ig_trader.db_bootstrap"]' in dockerfile
     assert "001_execution_state.sql" in dockerfile
     assert "002_execution_lease_fencing.sql" in dockerfile
+    assert "003_shadow_position_state.sql" in dockerfile
     assert "COPY src ./src" not in dockerfile
     assert ".env" not in dockerfile
     assert "RUN rm ./src/ig_trader/db_bootstrap.py" in runtime_dockerfile
@@ -581,7 +618,7 @@ def _required_local_postgres_dsn() -> str:
     return dsn
 
 
-def test_real_postgresql_blank_bootstrap_applies_and_verifies_both_migrations() -> None:
+def test_real_postgresql_blank_bootstrap_applies_and_verifies_all_migrations() -> None:
     dsn = _required_local_postgres_dsn()
     import psycopg
 
@@ -598,13 +635,27 @@ def test_real_postgresql_blank_bootstrap_applies_and_verifies_both_migrations() 
     with psycopg.connect(dsn) as connection:
         sources = load_migration_sources(MIGRATION_ROOT)
         applied = apply_required_migrations(connection, sources, "ephemeral-ci-bootstrap")
-        assert applied == (MIGRATION_001.version, MIGRATION_002.version)
+        assert applied == (MIGRATION_001.version, MIGRATION_002.version, MIGRATION_003.version)
         assert plan_migrations(inspect_schema(connection)) == ()
         ownership = inspect_ownership(connection)
         assert ownership.schema_owners == (("trading", "postgres"),)
-        assert len(ownership.relation_owners) == 11
+        assert len(ownership.relation_owners) == 12
         assert len(ownership.function_owners) == 6
         assert dict(ownership.migration_ledger) == EXPECTED_MIGRATION_HASHES
+        assert connection.execute(
+            """SELECT is_nullable FROM information_schema.columns
+            WHERE table_schema = 'trading' AND table_name = 'position_state'
+              AND column_name = 'deal_id'"""
+        ).fetchone()[0] == "NO"
+        shadow_columns = {
+            row[0]
+            for row in connection.execute(
+                """SELECT column_name FROM information_schema.columns
+                WHERE table_schema = 'trading' AND table_name = 'shadow_position_state'"""
+            ).fetchall()
+        }
+        assert {"deal_id", "order_id", "working_order_id"}.isdisjoint(shadow_columns)
+        assert "intent_id" in shadow_columns
         audit = read_exact_runtime_privileges(connection)
         assert "trading:USAGE" in audit.missing_required
         assert "trading.worker_leases:SELECT" in audit.missing_required
@@ -661,3 +712,53 @@ def test_real_postgresql_blank_bootstrap_applies_and_verifies_both_migrations() 
         assert public.classification == "PUBLIC_GRANT"
         assert public.public_execute is True
         assert public.direct_runtime_execute is False
+        apply_runtime_grants(connection)
+        exact = read_exact_runtime_privileges(connection)
+        assert exact.missing_required == ()
+        assert exact.prohibited_present == ()
+        assert dict(exact.table_privileges)["shadow_position_state"] == (
+            "SELECT",
+            "INSERT",
+            "UPDATE",
+        )
+
+        lease_store = PostgresExecutionLeaseStore(lambda: psycopg.connect(dsn))
+        leader = lease_store.acquire(EXECUTION_LEASE_NAME, "shadow-ci-leader", 30)
+        assert leader is not None
+        intent_id, position_id = uuid4(), uuid4()
+        now = datetime.now(UTC)
+
+        def write_shadow(cursor: object) -> None:
+            cursor.execute(
+                """INSERT INTO trading.trade_intents (
+                    intent_id, idempotency_key, strategy_name, epic, execution_mode,
+                    lifecycle_state, intent_payload, input_fingerprint_sha256,
+                    created_at, updated_at
+                ) VALUES (%s, %s, 'S0', 'CS.D.EURGBP.MINI.IP', 'SHADOW_DEMO',
+                    'SHADOW_INTENT_CREATED', '{}'::jsonb, %s, %s, %s)""",
+                (intent_id, str(intent_id), "a" * 64, now, now),
+            )
+            cursor.execute(
+                """INSERT INTO trading.shadow_position_state (
+                    shadow_position_id, intent_id, strategy_id, instrument, direction,
+                    entry_price, stop_price, target_price, opened_at, status,
+                    fencing_token, created_at, updated_at
+                ) VALUES (%s, %s, 'S0', 'EURGBP', 'BUY', 0.8500, 0.8490, 0.8510,
+                    %s, 'OPEN', %s, %s, %s)""",
+                (position_id, intent_id, now, leader.fencing_token, now, now),
+            )
+
+        lease_store.run_fenced(leader, FencedOperation.TRADE_INTENT, write_shadow)
+        assert lease_store.release(leader)
+        successor = lease_store.acquire(EXECUTION_LEASE_NAME, "shadow-ci-successor", 30)
+        assert successor is not None and successor.fencing_token > leader.fencing_token
+        with pytest.raises(FencingRejected):
+            lease_store.run_fenced(
+                leader,
+                FencedOperation.RECONCILIATION,
+                lambda cursor: cursor.execute(
+                    "UPDATE trading.shadow_position_state SET status = 'CLOSED' "
+                    "WHERE intent_id = %s",
+                    (intent_id,),
+                ),
+            )
