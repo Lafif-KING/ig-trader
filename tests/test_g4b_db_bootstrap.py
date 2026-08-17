@@ -41,7 +41,6 @@ from src.ig_trader.db_bootstrap import (
     inspect_ownership,
     inspect_schema,
     load_migration_sources,
-    main as db_bootstrap_main,
     plan_migrations,
     read_exact_runtime_privileges,
     read_function_provenance,
@@ -52,7 +51,7 @@ from src.ig_trader.db_bootstrap import (
     validate_runtime_principal,
     validate_runtime_privileges,
     write_sanitized_evidence,
-)
+)from src.ig_trader.db_bootstrap import main as db_bootstrap_main
 from src.ig_trader.execution_lease import (
     EXECUTION_LEASE_NAME,
     FencedOperation,
