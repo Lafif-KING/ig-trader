@@ -942,6 +942,7 @@ GRANT_STATEMENTS = (
     f"GRANT USAGE ON SCHEMA trading TO {_ROLE}",
     f"REVOKE ALL PRIVILEGES ON ALL TABLES IN SCHEMA trading FROM {_ROLE}",
     f"REVOKE ALL PRIVILEGES ON ALL SEQUENCES IN SCHEMA trading FROM {_ROLE}",
+    "REVOKE EXECUTE ON FUNCTION trading.reject_append_only_mutation() FROM PUBLIC",
     (
         "GRANT SELECT ON trading.schema_migrations, trading.worker_leases, "
         "trading.execution_cycle_claims, trading.trade_intents, "
