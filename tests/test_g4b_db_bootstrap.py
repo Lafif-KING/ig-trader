@@ -6,8 +6,8 @@ import json
 import os
 import sys
 from dataclasses import replace
-from pathlib import Path
 from datetime import UTC, datetime
+from pathlib import Path
 from uuid import uuid4
 
 import pytest
@@ -58,9 +58,8 @@ from src.ig_trader.execution_lease import (
     FencingRejected,
     PostgresExecutionLeaseStore,
 )
-from src.ig_trader.db_bootstrap import (
+
     main as db_bootstrap_main,
-)
 
 ROOT = Path(__file__).resolve().parents[1]
 MIGRATION_ROOT = ROOT / "migrations" / "postgresql"
