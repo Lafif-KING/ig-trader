@@ -18,6 +18,7 @@ class ImageInspectionError(RuntimeError):
 EXPECTED_PROJECT_FILES = {
     "app/migrations/postgresql/001_execution_state.sql",
     "app/migrations/postgresql/002_execution_lease_fencing.sql",
+    "app/migrations/postgresql/003_shadow_position_state.sql",
     "app/src/ig_trader/__init__.py",
     "app/src/ig_trader/db_bootstrap.py",
     "app/src/ig_trader/execution_lease.py",
@@ -155,6 +156,9 @@ def inspect_image(
         ),
         "002_execution_lease_fencing.sql": (
             "731b918b573ee232aab3fa709e7a41b5ac03e11f4f81d08458f8fcefcb16599c"
+        ),
+        "003_shadow_position_state.sql": (
+            "2fcd75c532e05a5bf3639b6667a66432261a732332e18e84e08af862033cc421"
         ),
     }
     if migration_hashes != expected_hashes:
