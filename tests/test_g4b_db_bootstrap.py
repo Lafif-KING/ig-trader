@@ -145,8 +145,7 @@ def test_001_and_002_complete_marks_003_absent() -> None:
 
     assert plan_migrations(snapshot) == (MIGRATION_003,)
     assert (
-        classify_schema(snapshot)
-        is SchemaClassification.MIGRATIONS_001_AND_002_COMPLETE_003_ABSENT
+        classify_schema(snapshot) is SchemaClassification.MIGRATIONS_001_AND_002_COMPLETE_003_ABSENT
     )
 
 
@@ -644,11 +643,14 @@ def test_real_postgresql_blank_bootstrap_applies_and_verifies_all_migrations() -
         assert len(ownership.relation_owners) == 12
         assert len(ownership.function_owners) == 6
         assert dict(ownership.migration_ledger) == EXPECTED_MIGRATION_HASHES
-        assert connection.execute(
-            """SELECT is_nullable FROM information_schema.columns
+        assert (
+            connection.execute(
+                """SELECT is_nullable FROM information_schema.columns
             WHERE table_schema = 'trading' AND table_name = 'position_state'
               AND column_name = 'deal_id'"""
-        ).fetchone()[0] == "NO"
+            ).fetchone()[0]
+            == "NO"
+        )
         shadow_columns = {
             row[0]
             for row in connection.execute(

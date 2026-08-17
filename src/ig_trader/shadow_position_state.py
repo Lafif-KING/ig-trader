@@ -122,8 +122,16 @@ class PostgresShadowPositionStore:
                     entry_price, stop_price, target_price, opened_at, closed_at, status,
                     exit_price, exit_reason, fencing_token, created_at, updated_at
                 """,
-                (to_state.value, fencing_token, updated_at, closed_at, exit_price, exit_reason,
-                 intent_id, from_state.value),
+                (
+                    to_state.value,
+                    fencing_token,
+                    updated_at,
+                    closed_at,
+                    exit_price,
+                    exit_reason,
+                    intent_id,
+                    from_state.value,
+                ),
             )
             row = cursor.fetchone()
             if row is None:
@@ -139,28 +147,57 @@ class PostgresShadowPositionStore:
 
 
 def _write_values(value: ShadowPosition) -> tuple[object, ...]:
-    return (value.shadow_position_id, value.intent_id, value.strategy_id, value.instrument,
-            value.direction, value.entry_price, value.stop_price, value.target_price,
-            value.opened_at, value.status.value, value.fencing_token, value.created_at,
-            value.updated_at)
+    return (
+        value.shadow_position_id,
+        value.intent_id,
+        value.strategy_id,
+        value.instrument,
+        value.direction,
+        value.entry_price,
+        value.stop_price,
+        value.target_price,
+        value.opened_at,
+        value.status.value,
+        value.fencing_token,
+        value.created_at,
+        value.updated_at,
+    )
 
 
 def _from_row(row: tuple[object, ...]) -> ShadowPosition:
     return ShadowPosition(
-        UUID(str(row[0])), UUID(str(row[1])), str(row[2]), str(row[3]), str(row[4]),
-        float(row[5]), float(row[6]), float(row[7]), _required_utc(row[8]), int(row[13]),
-        _required_utc(row[14]), _required_utc(row[15]), ShadowPositionState(str(row[10])),
-        _utc(row[9]), float(row[11]) if row[11] is not None else None,
+        UUID(str(row[0])),
+        UUID(str(row[1])),
+        str(row[2]),
+        str(row[3]),
+        str(row[4]),
+        float(row[5]),
+        float(row[6]),
+        float(row[7]),
+        _required_utc(row[8]),
+        int(row[13]),
+        _required_utc(row[14]),
+        _required_utc(row[15]),
+        ShadowPositionState(str(row[10])),
+        _utc(row[9]),
+        float(row[11]) if row[11] is not None else None,
         str(row[12]) if row[12] is not None else None,
     )
 
 
 def _validate(value: ShadowPosition) -> None:
-    if (not isinstance(value, ShadowPosition) or not value.strategy_id.strip()
-            or not value.instrument.strip() or value.direction not in {"BUY", "SELL"}
-            or value.status is not ShadowPositionState.OPEN or value.closed_at is not None
-            or value.exit_price is not None or value.exit_reason is not None
-            or not isinstance(value.fencing_token, int) or value.fencing_token <= 0):
+    if (
+        not isinstance(value, ShadowPosition)
+        or not value.strategy_id.strip()
+        or not value.instrument.strip()
+        or value.direction not in {"BUY", "SELL"}
+        or value.status is not ShadowPositionState.OPEN
+        or value.closed_at is not None
+        or value.exit_price is not None
+        or value.exit_reason is not None
+        or not isinstance(value.fencing_token, int)
+        or value.fencing_token <= 0
+    ):
         raise ShadowPositionStateError("SHADOW_POSITION_INVALID")
     for item in (value.entry_price, value.stop_price, value.target_price):
         if (
