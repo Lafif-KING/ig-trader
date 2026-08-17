@@ -41,6 +41,7 @@ from src.ig_trader.db_bootstrap import (
     inspect_ownership,
     inspect_schema,
     load_migration_sources,
+    main as db_bootstrap_main,
     plan_migrations,
     read_exact_runtime_privileges,
     read_function_provenance,
@@ -58,7 +59,7 @@ from src.ig_trader.execution_lease import (
     FencingRejected,
     PostgresExecutionLeaseStore,
 )
-
+from src.ig_trader.db_bootstrap import (
     main as db_bootstrap_main,
 
 ROOT = Path(__file__).resolve().parents[1]
