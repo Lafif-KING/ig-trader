@@ -69,8 +69,9 @@ diagnostics when a safer command exists. Never commit secrets.
 
 Implement only the current work order. Record unrelated improvements as
 backlog; do not implement them. If scope expands materially, stop and report.
-Read `docs/PROJECT_STATE.md` before broad discovery; verified Git/Azure reality
-overrides stale documentation.
+Read `docs/PROJECT_STATE.md` before broad discovery; `origin/main` and queried
+Git/Azure reality override the PROJECT_STATE snapshot. Stored SHAs are
+last-verified baselines, not permanently current commit identifiers.
 
 ## Testing and evidence
 

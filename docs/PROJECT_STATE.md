@@ -1,7 +1,9 @@
 # IG Trader project state
 
 Updated: 2026-08-17
-Authoritative source: `e7f37c143baf0a6ca5819144c2f7780eef72b76d`
+Authoritative branch: `origin/main`
+Last verified source baseline: `e7f37c143baf0a6ca5819144c2f7780eef72b76d`
+Current source SHA: verify with `git rev-parse origin/main`.
 
 ## Current gate
 
