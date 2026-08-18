@@ -525,6 +525,17 @@ def test_cloud_bootstrap_source_has_no_sqlite_fallback_or_broker_import() -> Non
     assert "print(_EVIDENCE_PREFIX + serialized" in source
 
 
+def test_bootstrap_admin_transfers_only_shadow_position_ownership_and_revokes_membership() -> None:
+    source = (ROOT / "src/ig_trader/db_bootstrap.py").read_text(encoding="utf-8")
+
+    assert "def _transfer_shadow_position_owner" in source
+    assert "ALTER TABLE trading.shadow_position_state OWNER TO" in source
+    assert 'GRANT \"{DURABLE_OWNER_NAME}\" TO \"{BOOTSTRAP_PRINCIPAL_NAME}\"' in source
+    assert 'REVOKE \"{DURABLE_OWNER_NAME}\" FROM \"{BOOTSTRAP_PRINCIPAL_NAME}\"' in source
+    assert "temporary durable owner membership remains" in source
+    assert "shadow position owner verification failed" in source
+
+
 def test_bootstrap_image_contains_only_required_project_inputs() -> None:
     dockerfile = (ROOT / "Dockerfile.db-bootstrap").read_text(encoding="utf-8")
     runtime_dockerfile = (ROOT / "Dockerfile").read_text(encoding="utf-8")

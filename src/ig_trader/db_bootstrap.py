@@ -741,6 +741,52 @@ def validate_durable_owner(record: RoleRecord | None) -> None:
         raise OwnershipTransferFailure("durable owner role attributes are unsafe")
 
 
+def _shadow_position_owner(connection: Any) -> str | None:
+    row = connection.execute(
+        """
+        SELECT pg_get_userbyid(c.relowner)
+        FROM pg_class c
+        JOIN pg_namespace n ON n.oid = c.relnamespace
+        WHERE n.nspname = 'trading' AND c.relname = 'shadow_position_state'
+        """
+    ).fetchone()
+    return None if row is None else str(row[0])
+
+
+def _shadow_owner_membership_exists(connection: Any) -> bool:
+    return bool(
+        connection.execute(
+            """
+            SELECT EXISTS (
+                SELECT 1
+                FROM pg_auth_members membership
+                JOIN pg_roles parent ON parent.oid = membership.roleid
+                JOIN pg_roles member ON member.oid = membership.member
+                WHERE parent.rolname = %s AND member.rolname = %s
+            )
+            """,
+            (DURABLE_OWNER_NAME, BOOTSTRAP_PRINCIPAL_NAME),
+        ).fetchone()[0]
+    )
+
+
+def _transfer_shadow_position_owner(connection: Any) -> None:
+    owner = _shadow_position_owner(connection)
+    if owner is None:
+        raise OwnershipTransferFailure("shadow position state table is absent")
+    if owner not in {BOOTSTRAP_PRINCIPAL_NAME, DURABLE_OWNER_NAME}:
+        raise OwnershipTransferFailure("shadow position state has an unexpected owner")
+    if owner == BOOTSTRAP_PRINCIPAL_NAME:
+        try:
+            connection.execute(
+                f"ALTER TABLE trading.shadow_position_state OWNER TO {DURABLE_OWNER_NAME}"
+            )
+        except Exception:
+            raise OwnershipTransferFailure("shadow position ownership transfer failed") from None
+    if _shadow_position_owner(connection) != DURABLE_OWNER_NAME:
+        raise OwnershipTransferFailure("shadow position owner verification failed")
+
+
 def _entra_principal_names(connection: Any, admin_only: bool) -> tuple[str, ...]:
     rows = connection.execute(
         "SELECT * FROM pg_catalog.pgaadauth_list_principals(%s)",
@@ -2005,28 +2051,58 @@ def run_bootstrap_admin(
         if _current_user(administrator_connection) != BOOTSTRAP_PRINCIPAL_NAME:
             raise IdentityMismatch("bootstrap connection identity is unexpected")
         verify_bootstrap_administrator(administrator_connection, config)
+        validate_durable_owner(read_role_record(administrator_connection, DURABLE_OWNER_NAME))
+        if read_entra_principal(administrator_connection, DURABLE_OWNER_NAME) is not None:
+            raise IdentityMismatch("durable owner must not have an Entra mapping")
         principal_created = ensure_runtime_principal(
             administrator_connection,
             config.runtime_identity_object_id,
         )
-    with connection_factory() as connection:
-        if _current_user(connection) != BOOTSTRAP_PRINCIPAL_NAME:
-            raise IdentityMismatch("bootstrap connection identity is unexpected")
-        connection_tls = _connection_uses_tls(connection)
-        before = inspect_schema(connection)
-        applied = apply_required_migrations(
-            connection,
-            sources,
-            BOOTSTRAP_PRINCIPAL_NAME,
-        )
-        principal = read_entra_principal(connection, RUNTIME_PRINCIPAL_NAME)
-        if principal is None:
-            raise IdentityMismatch("runtime principal is absent from the application database")
-        validate_runtime_principal(principal, config.runtime_identity_object_id)
-        apply_runtime_grants(connection)
-        privileges = read_runtime_privileges(connection)
-        validate_runtime_privileges(privileges)
-        after = inspect_schema(connection)
+        if _shadow_owner_membership_exists(administrator_connection):
+            raise OwnershipTransferFailure("durable owner membership already exists")
+        membership_granted = True
+        try:
+            administrator_connection.execute(
+                f'GRANT "{DURABLE_OWNER_NAME}" TO "{BOOTSTRAP_PRINCIPAL_NAME}"'
+            )
+            administrator_connection.commit()
+            with connection_factory() as connection:
+                if _current_user(connection) != BOOTSTRAP_PRINCIPAL_NAME:
+                    raise IdentityMismatch("bootstrap connection identity is unexpected")
+                connection_tls = _connection_uses_tls(connection)
+                before = inspect_schema(connection)
+                applied = apply_required_migrations(
+                    connection,
+                    sources,
+                    BOOTSTRAP_PRINCIPAL_NAME,
+                )
+                _transfer_shadow_position_owner(connection)
+                principal = read_entra_principal(connection, RUNTIME_PRINCIPAL_NAME)
+                if principal is None:
+                    raise IdentityMismatch(
+                        "runtime principal is absent from the application database"
+                    )
+                validate_runtime_principal(principal, config.runtime_identity_object_id)
+                apply_runtime_grants(connection)
+                privileges = read_runtime_privileges(connection)
+                validate_runtime_privileges(privileges)
+                after = inspect_schema(connection)
+        finally:
+            if membership_granted:
+                try:
+                    administrator_connection.rollback()
+                    administrator_connection.execute(
+                        f'REVOKE "{DURABLE_OWNER_NAME}" FROM "{BOOTSTRAP_PRINCIPAL_NAME}"'
+                    )
+                    administrator_connection.commit()
+                except Exception:
+                    raise OwnershipTransferFailure(
+                        "temporary durable owner membership removal failed"
+                    ) from None
+                if _shadow_owner_membership_exists(administrator_connection):
+                    raise OwnershipTransferFailure(
+                        "temporary durable owner membership remains"
+                    )
     return {
         "classification": BootstrapClassification.PASS_BOOTSTRAP_ADMIN,
         "connection_tls": connection_tls,
