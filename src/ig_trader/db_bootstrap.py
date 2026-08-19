@@ -2100,9 +2100,7 @@ def run_bootstrap_admin(
                         "temporary durable owner membership removal failed"
                     ) from None
                 if _shadow_owner_membership_exists(administrator_connection):
-                    raise OwnershipTransferFailure(
-                        "temporary durable owner membership remains"
-                    )
+                    raise OwnershipTransferFailure("temporary durable owner membership remains")
     return {
         "classification": BootstrapClassification.PASS_BOOTSTRAP_ADMIN,
         "connection_tls": connection_tls,

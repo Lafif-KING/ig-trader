@@ -530,8 +530,8 @@ def test_bootstrap_admin_transfers_only_shadow_position_ownership_and_revokes_me
 
     assert "def _transfer_shadow_position_owner" in source
     assert "ALTER TABLE trading.shadow_position_state OWNER TO" in source
-    assert 'GRANT \"{DURABLE_OWNER_NAME}\" TO \"{BOOTSTRAP_PRINCIPAL_NAME}\"' in source
-    assert 'REVOKE \"{DURABLE_OWNER_NAME}\" FROM \"{BOOTSTRAP_PRINCIPAL_NAME}\"' in source
+    assert 'GRANT "{DURABLE_OWNER_NAME}" TO "{BOOTSTRAP_PRINCIPAL_NAME}"' in source
+    assert 'REVOKE "{DURABLE_OWNER_NAME}" FROM "{BOOTSTRAP_PRINCIPAL_NAME}"' in source
     assert "temporary durable owner membership remains" in source
     assert "shadow position owner verification failed" in source
 
