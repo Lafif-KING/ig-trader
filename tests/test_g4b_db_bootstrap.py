@@ -577,6 +577,16 @@ def test_bootstrap_admin_transfers_only_shadow_position_ownership_and_revokes_me
     assert "shadow position owner verification failed" in source
 
 
+def test_bootstrap_admin_grant_phase_is_inside_cleanup_finally() -> None:
+    source = (ROOT / "src/ig_trader/db_bootstrap.py").read_text(encoding="utf-8")
+
+    grant_marker = "membership_granted = True\n        try:\n            try:\n"
+    assert grant_marker in source
+    assert "temporary durable owner membership grant failed" in source
+    assert "        finally:\n            if membership_granted:" in source
+    assert 'REVOKE "{DURABLE_OWNER_NAME}" FROM "{BOOTSTRAP_PRINCIPAL_NAME}"' in source
+
+
 def test_bootstrap_image_contains_only_required_project_inputs() -> None:
     dockerfile = (ROOT / "Dockerfile.db-bootstrap").read_text(encoding="utf-8")
     runtime_dockerfile = (ROOT / "Dockerfile").read_text(encoding="utf-8")

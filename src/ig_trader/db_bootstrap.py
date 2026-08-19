@@ -2072,15 +2072,15 @@ def run_bootstrap_admin(
             raise OwnershipTransferFailure("durable owner membership already exists")
         membership_granted = True
         try:
-            administrator_connection.execute(
-                f'GRANT "{DURABLE_OWNER_NAME}" TO "{BOOTSTRAP_PRINCIPAL_NAME}"'
-            )
-            administrator_connection.commit()
-        except Exception:
-            raise OwnershipTransferFailure(
-                "temporary durable owner membership grant failed"
-            ) from None
-        try:
+            try:
+                administrator_connection.execute(
+                    f'GRANT "{DURABLE_OWNER_NAME}" TO "{BOOTSTRAP_PRINCIPAL_NAME}"'
+                )
+                administrator_connection.commit()
+            except Exception:
+                raise OwnershipTransferFailure(
+                    "temporary durable owner membership grant failed"
+                ) from None
             with connection_factory() as connection:
                 if _current_user(connection) != BOOTSTRAP_PRINCIPAL_NAME:
                     raise IdentityMismatch("bootstrap connection identity is unexpected")
