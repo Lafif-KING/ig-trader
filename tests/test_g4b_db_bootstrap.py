@@ -13,7 +13,6 @@ from uuid import uuid4
 import pytest
 
 from src.ig_trader.db_bootstrap import (
-    _transfer_shadow_position_owner,
     BOOTSTRAP_PRINCIPAL_NAME,
     DURABLE_OWNER_NAME,
     EXPECTED_MIGRATION_HASHES,
@@ -35,6 +34,7 @@ from src.ig_trader.db_bootstrap import (
     RoleRecord,
     SchemaClassification,
     SchemaSnapshot,
+    _transfer_shadow_position_owner,
     apply_required_migrations,
     apply_runtime_grants,
     classify_schema,
