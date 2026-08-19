@@ -742,32 +742,42 @@ def validate_durable_owner(record: RoleRecord | None) -> None:
 
 
 def _shadow_position_owner(connection: Any) -> str | None:
-    row = connection.execute(
-        """
-        SELECT pg_get_userbyid(c.relowner)
-        FROM pg_class c
-        JOIN pg_namespace n ON n.oid = c.relnamespace
-        WHERE n.nspname = 'trading' AND c.relname = 'shadow_position_state'
-        """
-    ).fetchone()
+    try:
+        row = connection.execute(
+            """
+            SELECT pg_get_userbyid(c.relowner)
+            FROM pg_class c
+            JOIN pg_namespace n ON n.oid = c.relnamespace
+            WHERE n.nspname = 'trading' AND c.relname = 'shadow_position_state'
+            """
+        ).fetchone()
+    except Exception:
+        raise OwnershipTransferFailure(
+            "shadow position owner state unavailable"
+        ) from None
     return None if row is None else str(row[0])
 
 
 def _shadow_owner_membership_exists(connection: Any) -> bool:
-    return bool(
-        connection.execute(
-            """
-            SELECT EXISTS (
-                SELECT 1
-                FROM pg_auth_members membership
-                JOIN pg_roles parent ON parent.oid = membership.roleid
-                JOIN pg_roles member ON member.oid = membership.member
-                WHERE parent.rolname = %s AND member.rolname = %s
-            )
-            """,
-            (DURABLE_OWNER_NAME, BOOTSTRAP_PRINCIPAL_NAME),
-        ).fetchone()[0]
-    )
+    try:
+        return bool(
+            connection.execute(
+                """
+                SELECT EXISTS (
+                    SELECT 1
+                    FROM pg_auth_members membership
+                    JOIN pg_roles parent ON parent.oid = membership.roleid
+                    JOIN pg_roles member ON member.oid = membership.member
+                    WHERE parent.rolname = %s AND member.rolname = %s
+                )
+                """,
+                (DURABLE_OWNER_NAME, BOOTSTRAP_PRINCIPAL_NAME),
+            ).fetchone()[0]
+        )
+    except Exception:
+        raise OwnershipTransferFailure(
+            "temporary durable owner membership state unavailable"
+        ) from None
 
 
 def _transfer_shadow_position_owner(connection: Any) -> None:
@@ -2066,6 +2076,11 @@ def run_bootstrap_admin(
                 f'GRANT "{DURABLE_OWNER_NAME}" TO "{BOOTSTRAP_PRINCIPAL_NAME}"'
             )
             administrator_connection.commit()
+        except Exception:
+            raise OwnershipTransferFailure(
+                "temporary durable owner membership grant failed"
+            ) from None
+        try:
             with connection_factory() as connection:
                 if _current_user(connection) != BOOTSTRAP_PRINCIPAL_NAME:
                     raise IdentityMismatch("bootstrap connection identity is unexpected")

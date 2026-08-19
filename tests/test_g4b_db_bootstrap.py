@@ -46,6 +46,7 @@ from src.ig_trader.db_bootstrap import (
     read_function_provenance,
     read_reject_function_provenance,
     schema_inspection_evidence,
+    _transfer_shadow_position_owner,
     validate_durable_owner,
     validate_execution_nonce,
     validate_runtime_principal,
@@ -359,6 +360,46 @@ def test_durable_owner_must_be_nologin_and_non_admin() -> None:
     validate_durable_owner(safe)
     with pytest.raises(OwnershipTransferFailure, match="durable owner"):
         validate_durable_owner(replace(safe, can_login=True))
+
+
+class _OwnerResult:
+    def __init__(self, value: str | None) -> None:
+        self.value = value
+
+    def fetchone(self) -> tuple[str] | None:
+        return None if self.value is None else (self.value,)
+
+
+class _OwnerConnection:
+    def __init__(self, owners: list[str | None]) -> None:
+        self.owners = iter(owners)
+        self.statements: list[str] = []
+
+    def execute(self, statement: str, *args: object) -> _OwnerResult:
+        self.statements.append(statement)
+        if statement.lstrip().upper().startswith("ALTER TABLE"):
+            return _OwnerResult(None)
+        return _OwnerResult(next(self.owners))
+
+
+def test_shadow_owner_transfer_repairs_bootstrap_owned_table() -> None:
+    connection = _OwnerConnection(
+        [BOOTSTRAP_PRINCIPAL_NAME, DURABLE_OWNER_NAME]
+    )
+
+    _transfer_shadow_position_owner(connection)
+
+    assert any(
+        "ALTER TABLE trading.shadow_position_state OWNER TO" in statement
+        for statement in connection.statements
+    )
+
+
+def test_shadow_owner_transfer_fails_closed_for_unexpected_owner() -> None:
+    connection = _OwnerConnection([RUNTIME_PRINCIPAL_NAME])
+
+    with pytest.raises(OwnershipTransferFailure, match="unexpected owner"):
+        _transfer_shadow_position_owner(connection)
 
 
 def test_runtime_identity_cannot_run_bootstrap_admin() -> None:
