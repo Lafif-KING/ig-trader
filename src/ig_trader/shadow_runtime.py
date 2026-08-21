@@ -26,7 +26,7 @@ class ShadowStrategyPort(Protocol):
 
 
 class ShadowRuntimeOrchestrator:
-    """One deterministic S0 -> risk -> fenced shadow cycle."""
+    """One deterministic global cycle, intentionally shared across instruments."""
 
     def __init__(
         self,
@@ -51,31 +51,50 @@ class ShadowRuntimeOrchestrator:
         now: datetime,
         stop_price: float,
         target_price: float,
-        open_position_count: int,
         daily_loss_pct: float,
     ) -> dict[str, object]:
         if self.mode is ExecutionMode.NO_EXECUTION:
             return _evidence("NO_TRADE", "NO_EXECUTION", cycle_id, self.mode)
         if self.mode is not ExecutionMode.SHADOW_DEMO:
             return _evidence("FAILED_SAFE", "EXECUTION_MODE_DISABLED", cycle_id, self.mode)
-        if open_position_count != 0:
-            return _evidence("NO_TRADE", "SHADOW_V1_POSITION_LIMIT", cycle_id)
         try:
+            intent_id = _cycle_intent_id(cycle_id)
+            existing = self.shadow.store.get(intent_id)
+            if existing is not None:
+                if existing.instrument != self.epic:
+                    return _evidence("FAILED_SAFE", "GLOBAL_CYCLE_ALREADY_CLAIMED", cycle_id)
+                if existing.lifecycle is ShadowLifecycle.SHADOW_INTENT_CREATED:
+                    existing = self.shadow.open_intent(existing, now=now)
+                return {
+                    **_evidence("SHADOW_OPEN", "IDEMPOTENT_GLOBAL_CYCLE", cycle_id),
+                    "intent_id": str(existing.intent_id),
+                    "lifecycle": existing.lifecycle.value,
+                }
+            active_position_count = self.shadow.store.active_position_count()
+            if (
+                isinstance(active_position_count, bool)
+                or not isinstance(active_position_count, int)
+                or active_position_count < 0
+            ):
+                raise ShadowExecutionError("shadow active-position count is ambiguous")
+            if active_position_count >= 1:
+                return _evidence("NO_TRADE", "SHADOW_V1_POSITION_LIMIT", cycle_id)
             quote = self.market_data.quote(self.epic, as_of=now)
             if quote is None:
                 return _evidence("NO_TRADE", "MARKET_DATA_UNAVAILABLE", cycle_id)
             signal = self.strategy.generate_signal(self.epic, market_frame)
+            if getattr(signal, "epic", None) != self.epic:
+                return _evidence("FAILED_SAFE", "SIGNAL_INSTRUMENT_MISMATCH", cycle_id)
             direction = getattr(signal.direction, "value", signal.direction)
             if direction == SignalDirection.WAIT.value:
                 return _evidence("NO_TRADE", "S0_WAIT", cycle_id)
-            intent_id = _cycle_intent_id(cycle_id)
             intent = self.shadow.create_intent(
                 signal,
                 quote,
                 intent_id=intent_id,
                 stop_price=stop_price,
                 target_price=target_price,
-                open_positions_for_strategy=open_position_count,
+                open_positions_for_strategy=active_position_count,
                 daily_loss_pct=daily_loss_pct,
                 now=now,
             )
@@ -132,6 +151,8 @@ class ShadowRuntimeOrchestrator:
 
 
 def _cycle_intent_id(cycle_id: str) -> UUID:
+    """Bind one intent to the global cycle; epic is deliberately excluded."""
+
     if not cycle_id.strip():
         raise ShadowExecutionError("cycle identity is invalid")
     return uuid5(NAMESPACE_URL, f"ig-trader-shadow:{cycle_id}")
