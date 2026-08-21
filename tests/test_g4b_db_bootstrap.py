@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import sys
 from dataclasses import replace
 from datetime import UTC, datetime
@@ -34,6 +35,7 @@ from src.ig_trader.db_bootstrap import (
     RoleRecord,
     SchemaClassification,
     SchemaSnapshot,
+    _recovery_classification,
     _transfer_shadow_position_owner,
     apply_required_migrations,
     apply_runtime_grants,
@@ -583,6 +585,65 @@ def test_bootstrap_admin_grant_phase_is_inside_cleanup_finally() -> None:
     assert "temporary durable owner membership grant failed" in source
     assert "        finally:\n            if membership_granted:" in source
     assert 'REVOKE "{DURABLE_OWNER_NAME}" FROM "{BOOTSTRAP_PRINCIPAL_NAME}"' in source
+
+
+@pytest.mark.parametrize(
+    ("state", "owner", "membership", "expected"),
+    [
+        (MigrationState.ABSENT, None, False, "MIGRATION_003_ABSENT"),
+        (
+            MigrationState.COMPLETE,
+            BOOTSTRAP_PRINCIPAL_NAME,
+            False,
+            "MIGRATION_003_COMPLETE_BOOTSTRAP_OWNED",
+        ),
+        (
+            MigrationState.COMPLETE,
+            DURABLE_OWNER_NAME,
+            False,
+            "MIGRATION_003_COMPLETE_DURABLE_OWNED",
+        ),
+        (MigrationState.COMPLETE, RUNTIME_PRINCIPAL_NAME, False, "UNEXPECTED_OWNER"),
+        (MigrationState.COMPLETE, DURABLE_OWNER_NAME, True, "TEMPORARY_MEMBERSHIP_REMAINS"),
+    ],
+)
+def test_recovery_classification_covers_partial_bootstrap_states(
+    state: MigrationState,
+    owner: str | None,
+    membership: bool,
+    expected: str,
+) -> None:
+    markers = set(_markers(MIGRATION_001, MIGRATION_002))
+    if state is MigrationState.COMPLETE:
+        markers.update(MIGRATION_003.required_markers)
+    elif state is MigrationState.PARTIAL_DRIFTED:
+        markers.add("relation:shadow_position_state")
+    snapshot = SchemaSnapshot(
+        markers=frozenset(markers),
+        ledger=_ledger(MIGRATION_001.version, MIGRATION_002.version),
+    )
+    audit = PrivilegeSnapshot(
+        database_connect=True,
+        database_create=False,
+        schema_usage=True,
+        schema_create=False,
+        missing_required=(),
+        prohibited_present=(),
+        owned_object_count=0,
+    )
+
+    assert _recovery_classification(snapshot, owner, membership, audit, True, True) == expected
+
+
+def test_recovery_inspection_source_contains_no_mutation_sql() -> None:
+    source = (ROOT / "src/ig_trader/db_bootstrap.py").read_text(encoding="utf-8")
+    recovery_source = source.split("def run_recovery_inspection(", 1)[1].split(
+        "def _ownership_evidence", 1
+    )[0]
+
+    assert not re.search(
+        r"\b(CREATE|ALTER|DROP|GRANT|REVOKE|INSERT|UPDATE|DELETE)\b", recovery_source
+    )
 
 
 def test_bootstrap_image_contains_only_required_project_inputs() -> None:
