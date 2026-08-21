@@ -46,6 +46,7 @@ from src.ig_trader.db_bootstrap import (
     read_exact_runtime_privileges,
     read_function_provenance,
     read_reject_function_provenance,
+    resolve_execution_nonce,
     schema_inspection_evidence,
     validate_durable_owner,
     validate_execution_nonce,
@@ -484,6 +485,50 @@ def test_observability_canary_emits_one_nonce_linked_line_without_db_access(
 def test_execution_nonce_rejects_unlinkable_values(nonce: str) -> None:
     with pytest.raises(BootstrapError, match="nonce"):
         validate_execution_nonce(nonce)
+
+
+def test_explicit_execution_nonce_wins_over_azure_fallback() -> None:
+    assert (
+        resolve_execution_nonce(
+            "manual-nonce-123",
+            {"CONTAINER_APP_JOB_EXECUTION_NAME": "azure-job-abcdef"},
+        )
+        == "manual-nonce-123"
+    )
+
+
+def test_azure_job_execution_name_is_the_deterministic_nonce_fallback() -> None:
+    environment = {"CONTAINER_APP_JOB_EXECUTION_NAME": "my-job-iwpi4il"}
+    assert resolve_execution_nonce(None, environment) == "my-job-iwpi4il"
+    assert resolve_execution_nonce(None, environment) == "my-job-iwpi4il"
+    assert resolve_execution_nonce(
+        None, {"CONTAINER_APP_JOB_EXECUTION_NAME": "my-job-other1"}
+    ) != resolve_execution_nonce(None, environment)
+
+
+@pytest.mark.parametrize(
+    "environment",
+    [
+        {},
+        {"CONTAINER_APP_JOB_EXECUTION_NAME": "short"},
+        {"CONTAINER_APP_JOB_EXECUTION_NAME": "bad execution"},
+        {"CONTAINER_APP_JOB_EXECUTION_NAME": "bad.dot.value"},
+        {"CONTAINER_APP_JOB_EXECUTION_NAME": "a" * 65},
+    ],
+)
+def test_missing_or_malformed_azure_execution_name_fails_closed(
+    environment: dict[str, str],
+) -> None:
+    with pytest.raises(BootstrapError, match="nonce"):
+        resolve_execution_nonce(None, environment)
+
+
+def test_malformed_explicit_nonce_does_not_fall_back() -> None:
+    with pytest.raises(BootstrapError, match="nonce"):
+        resolve_execution_nonce(
+            "bad",
+            {"CONTAINER_APP_JOB_EXECUTION_NAME": "valid-azure-execution"},
+        )
 
 
 def test_schema_inspection_evidence_has_required_read_only_contract() -> None:

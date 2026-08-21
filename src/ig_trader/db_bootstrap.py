@@ -2262,6 +2262,20 @@ def validate_execution_nonce(value: str) -> str:
     return nonce
 
 
+def resolve_execution_nonce(
+    cli_nonce: str | None,
+    environment: Mapping[str, str],
+) -> str:
+    """Resolve the explicit nonce before the unique Azure job execution name."""
+
+    if cli_nonce is not None:
+        return validate_execution_nonce(cli_nonce)
+    azure_execution_name = environment.get("CONTAINER_APP_JOB_EXECUTION_NAME", "")
+    if not azure_execution_name.strip():
+        raise BootstrapError("execution nonce is required")
+    return validate_execution_nonce(azure_execution_name)
+
+
 def _default_migration_root() -> Path:
     return Path(__file__).resolve().parents[2] / "migrations" / "postgresql"
 
@@ -2282,12 +2296,12 @@ def main() -> int:
             "runtime-probe",
         ),
     )
-    parser.add_argument("--execution-nonce", required=True)
+    parser.add_argument("--execution-nonce")
     parser.add_argument("--evidence", type=Path, default=Path("/tmp/db-job-evidence.json"))
     parser.add_argument("--migration-root", type=Path, default=_default_migration_root())
     arguments = parser.parse_args()
     try:
-        nonce = validate_execution_nonce(arguments.execution_nonce)
+        nonce = resolve_execution_nonce(arguments.execution_nonce, os.environ)
         if arguments.mode == "observability-canary":
             evidence = {
                 "classification": "CANARY_PASS",
