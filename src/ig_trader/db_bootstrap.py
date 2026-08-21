@@ -354,11 +354,11 @@ class JobConfig:
             raise BootstrapError("private Azure PostgreSQL host is required")
         if database != DATABASE_NAME:
             raise BootstrapError("only the accepted ig_trader database is supported")
-        if mode in {"bootstrap-admin", "schema-inspect"}:
+        if mode in {"bootstrap-admin", "schema-inspect", "recovery-inspect"}:
             if identity_name != BOOTSTRAP_PRINCIPAL_NAME:
                 raise IdentityMismatch("bootstrap identity is required")
             runtime_object_id = None
-            if mode == "bootstrap-admin":
+            if mode in {"bootstrap-admin", "recovery-inspect"}:
                 runtime_object_id = _uuid(
                     environment.get("RUNTIME_UAMI_OBJECT_ID", ""),
                     "RUNTIME_UAMI_OBJECT_ID",
@@ -1848,6 +1848,184 @@ def run_schema_inspection(
     )
 
 
+def _position_deal_id_not_null(connection: Any) -> bool:
+    row = connection.execute(
+        """
+        SELECT is_nullable
+        FROM information_schema.columns
+        WHERE table_schema = 'trading'
+          AND table_name = 'position_state'
+          AND column_name = 'deal_id'
+        """
+    ).fetchone()
+    return row is not None and row[0] == "NO"
+
+
+def _recovery_classification(
+    snapshot: SchemaSnapshot,
+    shadow_owner: str | None,
+    temporary_membership: bool,
+    runtime_audit: RuntimePrivilegeAudit | None,
+    runtime_valid: bool,
+    durable_owner_valid: bool,
+) -> str:
+    if snapshot.state(MIGRATION_003) is MigrationState.PARTIAL_DRIFTED:
+        return "DATABASE_SCHEMA_DRIFT"
+    if not durable_owner_valid:
+        return "FAIL_CLOSED"
+    if temporary_membership:
+        return "TEMPORARY_MEMBERSHIP_REMAINS"
+    if (
+        not runtime_valid
+        or runtime_audit is None
+        or runtime_audit.missing_required
+        or runtime_audit.prohibited_present
+    ):
+        return "RUNTIME_PRIVILEGE_MISMATCH"
+    if snapshot.state(MIGRATION_003) is MigrationState.ABSENT:
+        return "MIGRATION_003_ABSENT"
+    if shadow_owner == BOOTSTRAP_PRINCIPAL_NAME:
+        return "MIGRATION_003_COMPLETE_BOOTSTRAP_OWNED"
+    if shadow_owner == DURABLE_OWNER_NAME:
+        return "MIGRATION_003_COMPLETE_DURABLE_OWNED"
+    return "UNEXPECTED_OWNER"
+
+
+def run_recovery_inspection(
+    config: JobConfig,
+    connection_factory: Callable[[], Any],
+    administrator_connection_factory: Callable[[], Any],
+    migration_root: Path,
+) -> dict[str, Any]:
+    """Collect sanitized, read-only evidence for a failed bootstrap retry."""
+
+    sources = load_migration_sources(migration_root)
+    with administrator_connection_factory() as administrator_connection:
+        if _current_user(administrator_connection) != BOOTSTRAP_PRINCIPAL_NAME:
+            raise IdentityMismatch("bootstrap connection identity is unexpected")
+        verify_bootstrap_administrator(administrator_connection, config)
+    with connection_factory() as connection:
+        if _current_user(connection) != BOOTSTRAP_PRINCIPAL_NAME:
+            raise IdentityMismatch("bootstrap connection identity is unexpected")
+        connection_tls = _connection_uses_tls(connection)
+        snapshot = inspect_schema(connection)
+        try:
+            classification = classify_schema(snapshot)
+            planned = plan_migrations(snapshot)
+            drift_classification = classification.value
+        except DatabaseSchemaDrift:
+            classification = SchemaClassification.MIGRATIONS_001_TO_003_COMPLETE
+            planned = ()
+            drift_classification = "DATABASE_SCHEMA_DRIFT"
+        shadow_owner = _shadow_position_owner(connection)
+        durable_owner = read_role_record(connection, DURABLE_OWNER_NAME)
+        durable_owner_valid = (
+            durable_owner is not None
+            and not durable_owner.can_login
+            and not durable_owner.is_superuser
+            and not durable_owner.can_create_role
+            and not durable_owner.can_create_database
+            and not durable_owner.can_replicate
+            and not durable_owner.bypasses_rls
+            and not durable_owner.azure_pg_admin_member
+        )
+        durable_mapping_absent = read_entra_principal(connection, DURABLE_OWNER_NAME) is None
+        temporary_membership = _shadow_owner_membership_exists(connection)
+        runtime = read_entra_principal(connection, RUNTIME_PRINCIPAL_NAME)
+        runtime_matches = runtime is not None and config.runtime_identity_object_id is not None
+        runtime_matches = (
+            runtime_matches and runtime.object_id == config.runtime_identity_object_id.casefold()
+        )
+        runtime_audit: RuntimePrivilegeAudit | None
+        try:
+            runtime_audit = read_exact_runtime_privileges(connection)
+        except (DatabaseSchemaDrift, IdentityMismatch):
+            runtime_audit = None
+        runtime_valid = (
+            runtime_matches
+            and runtime is not None
+            and runtime.principal_type == "service"
+            and not runtime.is_admin
+            and not runtime.is_superuser
+            and not runtime.can_create_role
+            and not runtime.can_create_database
+            and not runtime.azure_pg_admin_member
+            and runtime_audit is not None
+            and runtime_audit.owned_object_count == 0
+        )
+        deal_id_not_null = _position_deal_id_not_null(connection)
+        final_classification = _recovery_classification(
+            snapshot,
+            shadow_owner,
+            temporary_membership,
+            runtime_audit,
+            runtime_valid,
+            durable_owner_valid and durable_mapping_absent,
+        )
+        connection.rollback()
+    runtime_evidence = (
+        _runtime_privilege_evidence(runtime_audit) if runtime_audit is not None else None
+    )
+    shadow_privileges = (
+        None
+        if runtime_evidence is None
+        else runtime_evidence["actual"]["table_privileges"].get("shadow_position_state")
+    )
+    return {
+        "classification": final_classification,
+        "connection_tls": connection_tls,
+        "database": DATABASE_NAME,
+        "drift_classification": drift_classification,
+        "durable_owner": {
+            "exists": durable_owner is not None,
+            "nologin": durable_owner is not None and not durable_owner.can_login,
+            "non_superuser": durable_owner is not None and not durable_owner.is_superuser,
+            "no_createdb": durable_owner is not None and not durable_owner.can_create_database,
+            "no_createrole": durable_owner is not None and not durable_owner.can_create_role,
+            "no_replication": durable_owner is not None and not durable_owner.can_replicate,
+            "no_bypassrls": durable_owner is not None and not durable_owner.bypasses_rls,
+            "no_entra_mapping": durable_mapping_absent,
+        },
+        "legacy_position_state_deal_id_not_null": deal_id_not_null,
+        "migration_001": snapshot.state(MIGRATION_001).value,
+        "migration_001_expected_hash": MIGRATION_001.checksum_sha256,
+        "migration_002": snapshot.state(MIGRATION_002).value,
+        "migration_002_expected_hash": MIGRATION_002.checksum_sha256,
+        "migration_003": snapshot.state(MIGRATION_003).value,
+        "migration_003_expected_hash": MIGRATION_003.checksum_sha256,
+        "migration_hashes": {
+            source.definition.version: source.definition.checksum_sha256 for source in sources
+        },
+        "planned_migrations": [migration.version for migration in planned],
+        "read_only": True,
+        "runtime_principal": {
+            "exists": runtime is not None,
+            "expected_object_id_matches": runtime_matches,
+            "service_principal": runtime is not None and runtime.principal_type == "service",
+            "non_admin": runtime is not None and not runtime.is_admin,
+            "non_owner": runtime_evidence is not None
+            and runtime_evidence["actual"]["owned_object_count"] == 0,
+        },
+        "runtime_privileges": runtime_evidence,
+        "shadow_position_state": {
+            "exists": shadow_owner is not None,
+            "owner": shadow_owner,
+            "owner_classification": (
+                "bootstrap_principal"
+                if shadow_owner == BOOTSTRAP_PRINCIPAL_NAME
+                else "ig_trader_schema_owner"
+                if shadow_owner == DURABLE_OWNER_NAME
+                else "unexpected_principal"
+                if shadow_owner is not None
+                else "absent"
+            ),
+            "runtime_privileges": shadow_privileges,
+        },
+        "temporary_durable_owner_membership": temporary_membership,
+        "token_memory_only": True,
+    }
+
+
 def _ownership_evidence(inventory: OwnershipInventory) -> dict[str, Any]:
     relation_counts: dict[str, int] = {}
     for _, kind, _ in inventory.relation_owners:
@@ -2273,6 +2451,7 @@ def main() -> int:
         choices=(
             "observability-canary",
             "schema-inspect",
+            "recovery-inspect",
             "bootstrap-admin",
             "ownership-inspect",
             "ownership-remediate",
@@ -2299,6 +2478,13 @@ def main() -> int:
             factory = ManagedIdentityConnectionFactory(config)
             if arguments.mode == "schema-inspect":
                 evidence = run_schema_inspection(
+                    config,
+                    factory,
+                    factory.administrator_connection,
+                    arguments.migration_root,
+                )
+            elif arguments.mode == "recovery-inspect":
+                evidence = run_recovery_inspection(
                     config,
                     factory,
                     factory.administrator_connection,
