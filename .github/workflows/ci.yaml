@@ -129,6 +129,14 @@ jobs:
             --junitxml=artifacts/ci/tests-g4c-shadow-postgres-store.xml \
             tests/test_shadow_postgres_store.py::test_postgres_shadow_store_lifecycle_restart_and_fencing
 
+      - name: G4C PostgreSQL shadow-runtime lifecycle proof
+        env:
+          RUN_POSTGRES_INTEGRATION: "1"
+        run: |
+          timeout --signal=TERM --kill-after=10s 60s poetry run pytest -q \
+            --junitxml=artifacts/ci/tests-g4c-shadow-runtime-postgres.xml \
+            tests/test_shadow_runtime.py::test_postgres_shadow_runtime_end_to_end
+
       - name: G4B PostgreSQL two-process handoff proof
         env:
           RUN_POSTGRES_INTEGRATION: "1"
