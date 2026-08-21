@@ -13,6 +13,7 @@ from uuid import uuid4
 
 import pytest
 
+import src.ig_trader.db_bootstrap as db_bootstrap_module
 from src.ig_trader.db_bootstrap import (
     BOOTSTRAP_PRINCIPAL_NAME,
     DURABLE_OWNER_NAME,
@@ -21,6 +22,7 @@ from src.ig_trader.db_bootstrap import (
     MIGRATION_001,
     MIGRATION_002,
     MIGRATION_003,
+    MIGRATIONS,
     REMEDIATION_PRINCIPAL_NAME,
     RUNTIME_PRINCIPAL_NAME,
     BootstrapError,
@@ -35,6 +37,7 @@ from src.ig_trader.db_bootstrap import (
     RoleRecord,
     SchemaClassification,
     SchemaSnapshot,
+    _begin_read_only_transaction,
     _recovery_classification,
     _transfer_shadow_position_owner,
     apply_required_migrations,
@@ -48,6 +51,7 @@ from src.ig_trader.db_bootstrap import (
     read_exact_runtime_privileges,
     read_function_provenance,
     read_reject_function_provenance,
+    run_recovery_inspection,
     schema_inspection_evidence,
     validate_durable_owner,
     validate_execution_nonce,
@@ -632,7 +636,37 @@ def test_recovery_classification_covers_partial_bootstrap_states(
         owned_object_count=0,
     )
 
-    assert _recovery_classification(snapshot, owner, membership, audit, True, True) == expected
+    assert (
+        _recovery_classification(snapshot, False, owner, membership, audit, True, True) == expected
+    )
+
+
+@pytest.mark.parametrize("migration", MIGRATIONS)
+def test_recovery_classifies_partial_drift_in_every_migration(migration: object) -> None:
+    snapshot = SchemaSnapshot(
+        markers=frozenset({next(iter(migration.required_markers))}),  # type: ignore[attr-defined]
+        ledger={},
+    )
+
+    assert (
+        _recovery_classification(snapshot, False, None, False, None, False, False)
+        == "DATABASE_SCHEMA_DRIFT"
+    )
+
+
+def test_recovery_classifies_canonical_ledger_drift_first() -> None:
+    snapshot = SchemaSnapshot(
+        markers=_markers(MIGRATION_001, MIGRATION_002, MIGRATION_003),
+        ledger={
+            **_ledger(MIGRATION_001.version, MIGRATION_002.version),
+            MIGRATION_003.version: "0" * 64,
+        },
+    )
+
+    assert (
+        _recovery_classification(snapshot, True, DURABLE_OWNER_NAME, False, None, False, True)
+        == "DATABASE_SCHEMA_DRIFT"
+    )
 
 
 def test_recovery_inspection_source_contains_no_mutation_sql() -> None:
@@ -887,3 +921,84 @@ def test_real_postgresql_blank_bootstrap_applies_and_verifies_all_migrations() -
                     (intent_id,),
                 ),
             )
+
+
+def test_real_postgresql_recovery_inspection_is_database_enforced_read_only(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    admin_dsn = _required_local_postgres_dsn()
+    import psycopg
+    from psycopg.conninfo import make_conninfo
+
+    with psycopg.connect(admin_dsn, autocommit=True) as admin:
+        admin.execute("DROP DATABASE IF EXISTS ig_trader")
+        admin.execute("CREATE DATABASE ig_trader")
+        admin.execute(
+            "DO $$ BEGIN CREATE ROLE azure_pg_admin NOLOGIN; "
+            "EXCEPTION WHEN duplicate_object THEN NULL; END $$"
+        )
+        admin.execute(
+            f'DO $$ BEGIN CREATE ROLE "{RUNTIME_PRINCIPAL_NAME}" LOGIN; '
+            "EXCEPTION WHEN duplicate_object THEN NULL; END $$"
+        )
+        admin.execute(
+            f'DO $$ BEGIN CREATE ROLE "{DURABLE_OWNER_NAME}" NOLOGIN; '
+            "EXCEPTION WHEN duplicate_object THEN NULL; END $$"
+        )
+    app_dsn = make_conninfo(admin_dsn, dbname="ig_trader")
+    with psycopg.connect(app_dsn) as connection:
+        sources = load_migration_sources(MIGRATION_ROOT)
+        apply_required_migrations(connection, sources, BOOTSTRAP_PRINCIPAL_NAME)
+        connection.execute(
+            f'ALTER TABLE trading.shadow_position_state OWNER TO "{DURABLE_OWNER_NAME}"'
+        )
+        apply_runtime_grants(connection)
+        before_schema = inspect_schema(connection)
+        before_ownership = inspect_ownership(connection)
+        connection.commit()
+
+    runtime_principal = PrincipalRecord(
+        role_name=RUNTIME_PRINCIPAL_NAME,
+        principal_type="service",
+        object_id=RUNTIME_OBJECT_ID,
+        is_admin=False,
+    )
+    monkeypatch.setattr(
+        db_bootstrap_module, "_current_user", lambda _connection: BOOTSTRAP_PRINCIPAL_NAME
+    )
+    monkeypatch.setattr(db_bootstrap_module, "_connection_uses_tls", lambda _connection: True)
+    monkeypatch.setattr(db_bootstrap_module, "verify_bootstrap_administrator", lambda *_args: None)
+    monkeypatch.setattr(
+        db_bootstrap_module,
+        "read_entra_principal",
+        lambda _connection, role: runtime_principal if role == RUNTIME_PRINCIPAL_NAME else None,
+    )
+    config = JobConfig(
+        mode="recovery-inspect",
+        host="localhost.postgres.database.azure.com",
+        database="ig_trader",
+        database_user=BOOTSTRAP_PRINCIPAL_NAME,
+        client_id=CLIENT_ID,
+        job_identity_name=BOOTSTRAP_PRINCIPAL_NAME,
+        job_identity_object_id=BOOTSTRAP_OBJECT_ID,
+        runtime_identity_object_id=RUNTIME_OBJECT_ID,
+        orphan_identity_object_id=None,
+    )
+
+    evidence = run_recovery_inspection(
+        config,
+        lambda: psycopg.connect(app_dsn),
+        lambda: psycopg.connect(admin_dsn),
+        MIGRATION_ROOT,
+    )
+    assert evidence["classification"] == "MIGRATION_003_COMPLETE_DURABLE_OWNED"
+
+    with psycopg.connect(app_dsn) as connection:
+        after_schema = inspect_schema(connection)
+        after_ownership = inspect_ownership(connection)
+        assert before_schema == after_schema
+        assert before_ownership == after_ownership
+        _begin_read_only_transaction(connection)
+        with pytest.raises(psycopg.errors.ReadOnlySqlTransaction):
+            connection.execute("CREATE TABLE trading.recovery_inspection_must_fail (id int)")
+        connection.rollback()

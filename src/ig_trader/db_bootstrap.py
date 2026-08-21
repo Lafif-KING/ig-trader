@@ -1775,6 +1775,13 @@ def _connection_uses_tls(connection: Any) -> bool:
     return True
 
 
+def _begin_read_only_transaction(connection: Any) -> None:
+    connection.execute("SET TRANSACTION READ ONLY")
+    row = connection.execute("SHOW transaction_read_only").fetchone()
+    if row is None or str(row[0]).casefold() != "on":
+        raise DatabaseUnavailable("PostgreSQL read-only transaction is unavailable")
+
+
 def schema_inspection_evidence(
     snapshot: SchemaSnapshot,
     sources: Sequence[MigrationSource],
@@ -1863,13 +1870,16 @@ def _position_deal_id_not_null(connection: Any) -> bool:
 
 def _recovery_classification(
     snapshot: SchemaSnapshot,
+    schema_drift: bool,
     shadow_owner: str | None,
     temporary_membership: bool,
     runtime_audit: RuntimePrivilegeAudit | None,
     runtime_valid: bool,
     durable_owner_valid: bool,
 ) -> str:
-    if snapshot.state(MIGRATION_003) is MigrationState.PARTIAL_DRIFTED:
+    if schema_drift or any(
+        snapshot.state(migration) is MigrationState.PARTIAL_DRIFTED for migration in MIGRATIONS
+    ):
         return "DATABASE_SCHEMA_DRIFT"
     if not durable_owner_valid:
         return "FAIL_CLOSED"
@@ -1901,10 +1911,13 @@ def run_recovery_inspection(
 
     sources = load_migration_sources(migration_root)
     with administrator_connection_factory() as administrator_connection:
+        _begin_read_only_transaction(administrator_connection)
         if _current_user(administrator_connection) != BOOTSTRAP_PRINCIPAL_NAME:
             raise IdentityMismatch("bootstrap connection identity is unexpected")
         verify_bootstrap_administrator(administrator_connection, config)
+        administrator_connection.rollback()
     with connection_factory() as connection:
+        _begin_read_only_transaction(connection)
         if _current_user(connection) != BOOTSTRAP_PRINCIPAL_NAME:
             raise IdentityMismatch("bootstrap connection identity is unexpected")
         connection_tls = _connection_uses_tls(connection)
@@ -1913,10 +1926,12 @@ def run_recovery_inspection(
             classification = classify_schema(snapshot)
             planned = plan_migrations(snapshot)
             drift_classification = classification.value
+            schema_drift = False
         except DatabaseSchemaDrift:
             classification = SchemaClassification.MIGRATIONS_001_TO_003_COMPLETE
             planned = ()
             drift_classification = "DATABASE_SCHEMA_DRIFT"
+            schema_drift = True
         shadow_owner = _shadow_position_owner(connection)
         durable_owner = read_role_record(connection, DURABLE_OWNER_NAME)
         durable_owner_valid = (
@@ -1956,6 +1971,7 @@ def run_recovery_inspection(
         deal_id_not_null = _position_deal_id_not_null(connection)
         final_classification = _recovery_classification(
             snapshot,
+            schema_drift,
             shadow_owner,
             temporary_membership,
             runtime_audit,
