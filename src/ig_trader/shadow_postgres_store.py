@@ -53,9 +53,40 @@ class PostgresShadowStore:
         except Exception:
             raise ShadowExecutionError("shadow persistence read failed closed") from None
 
+    def active_position_count(self) -> int:
+        try:
+            with self._connection_factory() as connection:
+                connection.execute("SET TRANSACTION READ ONLY")
+                read_only = connection.execute("SHOW transaction_read_only").fetchone()
+                if read_only is None or str(read_only[0]).casefold() != "on":
+                    raise ShadowExecutionError("shadow active-position read is not read-only")
+                row = connection.execute(
+                    """
+                    SELECT count(*)
+                    FROM trading.trade_intents ti
+                    LEFT JOIN trading.shadow_position_state sp
+                      ON sp.intent_id = ti.intent_id
+                    WHERE ti.execution_mode = 'SHADOW_DEMO'
+                      AND (
+                        ti.lifecycle_state IN ('SHADOW_INTENT_CREATED', 'OPEN')
+                        OR sp.status = 'OPEN'
+                      )
+                    """
+                ).fetchone()
+                connection.rollback()
+            if row is None or int(row[0]) < 0:
+                raise ShadowExecutionError("shadow active-position count is ambiguous")
+            return int(row[0])
+        except ShadowExecutionError:
+            raise
+        except Exception:
+            raise ShadowExecutionError("shadow active-position count failed closed") from None
+
     def put(self, record: ShadowIntentRecord) -> ShadowIntentRecord:
         if record.lifecycle is not ShadowLifecycle.SHADOW_INTENT_CREATED:
             raise ShadowExecutionError("only a new shadow intent can be persisted")
+        if record.fencing_token != self._current_fencing_token():
+            raise ShadowExecutionError("stale shadow fencing token")
         payload = _intent_payload(record)
         fingerprint = hashlib.sha256(_canonical_json(payload).encode()).hexdigest()
 

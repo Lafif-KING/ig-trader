@@ -121,6 +121,8 @@ class ShadowPerformance:
 class ShadowStore(Protocol):
     def get(self, intent_id: UUID) -> ShadowIntentRecord | None: ...
 
+    def active_position_count(self) -> int: ...
+
     def put(self, record: ShadowIntentRecord) -> ShadowIntentRecord: ...
 
     def transition(
@@ -150,6 +152,12 @@ class InMemoryShadowStore:
 
     def get(self, intent_id: UUID) -> ShadowIntentRecord | None:
         return self.records.get(intent_id)
+
+    def active_position_count(self) -> int:
+        return sum(
+            record.lifecycle in {ShadowLifecycle.SHADOW_INTENT_CREATED, ShadowLifecycle.OPEN}
+            for record in self.records.values()
+        )
 
     def put(self, record: ShadowIntentRecord) -> ShadowIntentRecord:
         self._require_fence(record.fencing_token)
