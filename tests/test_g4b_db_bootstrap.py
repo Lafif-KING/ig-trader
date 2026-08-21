@@ -51,6 +51,7 @@ from src.ig_trader.db_bootstrap import (
     read_exact_runtime_privileges,
     read_function_provenance,
     read_reject_function_provenance,
+    resolve_execution_nonce,
     run_recovery_inspection,
     schema_inspection_evidence,
     validate_durable_owner,
@@ -490,6 +491,42 @@ def test_observability_canary_emits_one_nonce_linked_line_without_db_access(
 def test_execution_nonce_rejects_unlinkable_values(nonce: str) -> None:
     with pytest.raises(BootstrapError, match="nonce"):
         validate_execution_nonce(nonce)
+
+
+def test_execution_nonce_prefers_explicit_value() -> None:
+    assert (
+        resolve_execution_nonce(
+            "explicit-nonce-1234",
+            {"CONTAINER_APP_JOB_EXECUTION_NAME": "azure-execution-5678"},
+        )
+        == "explicit-nonce-1234"
+    )
+
+
+def test_execution_nonce_uses_azure_job_execution_name() -> None:
+    assert (
+        resolve_execution_nonce(
+            None,
+            {"CONTAINER_APP_JOB_EXECUTION_NAME": "azure-execution-5678"},
+        )
+        == "azure-execution-5678"
+    )
+
+
+@pytest.mark.parametrize(
+    ("explicit", "environment"),
+    [
+        (None, {}),
+        (None, {"CONTAINER_APP_JOB_EXECUTION_NAME": "short"}),
+        ("short", {"CONTAINER_APP_JOB_EXECUTION_NAME": "azure-execution-5678"}),
+    ],
+)
+def test_execution_nonce_resolution_fails_closed(
+    explicit: str | None,
+    environment: dict[str, str],
+) -> None:
+    with pytest.raises(BootstrapError, match="nonce"):
+        resolve_execution_nonce(explicit, environment)
 
 
 def test_schema_inspection_evidence_has_required_read_only_contract() -> None:
