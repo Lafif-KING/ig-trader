@@ -383,9 +383,7 @@ class _OwnerConnection:
 
 
 def test_shadow_owner_transfer_repairs_bootstrap_owned_table() -> None:
-    connection = _OwnerConnection(
-        [BOOTSTRAP_PRINCIPAL_NAME, DURABLE_OWNER_NAME]
-    )
+    connection = _OwnerConnection([BOOTSTRAP_PRINCIPAL_NAME, DURABLE_OWNER_NAME])
 
     _transfer_shadow_position_owner(connection)
 

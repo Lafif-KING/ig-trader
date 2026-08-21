@@ -752,9 +752,7 @@ def _shadow_position_owner(connection: Any) -> str | None:
             """
         ).fetchone()
     except Exception:
-        raise OwnershipTransferFailure(
-            "shadow position owner state unavailable"
-        ) from None
+        raise OwnershipTransferFailure("shadow position owner state unavailable") from None
     return None if row is None else str(row[0])
 
 
