@@ -113,6 +113,14 @@ jobs:
             --junitxml=artifacts/ci/tests-g4b-db-bootstrap-postgres.xml \
             tests/test_g4b_db_bootstrap.py::test_real_postgresql_blank_bootstrap_applies_and_verifies_all_migrations
 
+      - name: G4C PostgreSQL recovery inspection read-only proof
+        env:
+          RUN_POSTGRES_INTEGRATION: "1"
+        run: |
+          timeout --signal=TERM --kill-after=10s 60s poetry run pytest -q \
+            --junitxml=artifacts/ci/tests-g4c-db-recovery-postgres.xml \
+            tests/test_g4b_db_bootstrap.py::test_real_postgresql_recovery_inspection_is_database_enforced_read_only
+
       - name: G4B PostgreSQL fencing proof
         env:
           RUN_POSTGRES_INTEGRATION: "1"

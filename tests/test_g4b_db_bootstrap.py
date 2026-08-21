@@ -682,7 +682,8 @@ def test_recovery_classification_covers_partial_bootstrap_states(
     )
 
     assert (
-        _recovery_classification(snapshot, False, owner, membership, audit, True, True) == expected
+        _recovery_classification(snapshot, False, owner, membership, audit, True, True, True)
+        == expected
     )
 
 
@@ -694,7 +695,7 @@ def test_recovery_classifies_partial_drift_in_every_migration(migration: object)
     )
 
     assert (
-        _recovery_classification(snapshot, False, None, False, None, False, False)
+        _recovery_classification(snapshot, False, None, False, None, False, False, True)
         == "DATABASE_SCHEMA_DRIFT"
     )
 
@@ -709,7 +710,37 @@ def test_recovery_classifies_canonical_ledger_drift_first() -> None:
     )
 
     assert (
-        _recovery_classification(snapshot, True, DURABLE_OWNER_NAME, False, None, False, True)
+        _recovery_classification(
+            snapshot,
+            True,
+            DURABLE_OWNER_NAME,
+            False,
+            None,
+            False,
+            True,
+            True,
+        )
+        == "DATABASE_SCHEMA_DRIFT"
+    )
+
+
+def test_recovery_classifies_nullable_legacy_deal_id_as_schema_drift() -> None:
+    snapshot = SchemaSnapshot(
+        markers=_markers(MIGRATION_001, MIGRATION_002),
+        ledger=_ledger(MIGRATION_001.version, MIGRATION_002.version),
+    )
+
+    assert (
+        _recovery_classification(
+            snapshot,
+            False,
+            None,
+            False,
+            None,
+            True,
+            True,
+            False,
+        )
         == "DATABASE_SCHEMA_DRIFT"
     )
 
@@ -773,6 +804,8 @@ def test_ci_has_dedicated_bootstrap_postgresql_image_and_evidence_gates() -> Non
 
     assert "tests-g4b-db-bootstrap.xml" in workflow
     assert "tests-g4b-db-bootstrap-postgres.xml" in workflow
+    assert "tests-g4c-db-recovery-postgres.xml" in workflow
+    assert "test_real_postgresql_recovery_inspection_is_database_enforced_read_only" in workflow
     assert "poetry run pip check" in workflow
     assert "Dockerfile.db-bootstrap" in workflow
     assert "tools/g4b_db_bootstrap_image_inspect.py" in workflow
@@ -968,6 +1001,48 @@ def test_real_postgresql_blank_bootstrap_applies_and_verifies_all_migrations() -
             )
 
 
+def _grant_recovery_runtime_privileges(
+    connection: object,
+    *,
+    include_shadow_position_state: bool,
+) -> None:
+    role = f'"{RUNTIME_PRINCIPAL_NAME}"'
+    connection.execute(f"REVOKE ALL ON DATABASE ig_trader FROM {role}")
+    connection.execute(f"GRANT CONNECT ON DATABASE ig_trader TO {role}")
+    connection.execute(f"REVOKE ALL ON SCHEMA trading FROM {role}")
+    connection.execute(f"GRANT USAGE ON SCHEMA trading TO {role}")
+    connection.execute(f"REVOKE ALL ON ALL TABLES IN SCHEMA trading FROM {role}")
+    connection.execute(f"REVOKE ALL ON ALL SEQUENCES IN SCHEMA trading FROM {role}")
+    connection.execute("REVOKE EXECUTE ON ALL FUNCTIONS IN SCHEMA trading FROM PUBLIC")
+    connection.execute(f"REVOKE EXECUTE ON ALL FUNCTIONS IN SCHEMA trading FROM {role}")
+    table_privileges = {
+        "schema_migrations": "SELECT",
+        "worker_leases": "SELECT",
+        "execution_cycle_claims": "SELECT, INSERT, UPDATE",
+        "trade_intents": "SELECT, INSERT, UPDATE",
+        "lifecycle_events": "SELECT, INSERT",
+        "broker_references": "SELECT, INSERT",
+        "position_state": "SELECT, INSERT, UPDATE",
+        "reconciliation_state": "SELECT, INSERT, UPDATE",
+        "evidence_metadata": "SELECT, INSERT",
+    }
+    if include_shadow_position_state:
+        table_privileges["shadow_position_state"] = "SELECT, INSERT, UPDATE"
+    for table, privileges in table_privileges.items():
+        connection.execute(f"GRANT {privileges} ON trading.{table} TO {role}")
+    connection.execute(
+        f"GRANT USAGE, SELECT ON SEQUENCE trading.lifecycle_events_sequence_seq TO {role}"
+    )
+    for signature in (
+        "trading.acquire_execution_lease(text,text,double precision)",
+        "trading.renew_execution_lease(text,text,bigint,double precision)",
+        "trading.release_execution_lease(text,text,bigint)",
+        "trading.assert_execution_fence(text,text,bigint,text)",
+        "trading.require_current_execution_fence()",
+    ):
+        connection.execute(f"GRANT EXECUTE ON FUNCTION {signature} TO {role}")
+
+
 def test_real_postgresql_recovery_inspection_is_database_enforced_read_only(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -991,17 +1066,6 @@ def test_real_postgresql_recovery_inspection_is_database_enforced_read_only(
             "EXCEPTION WHEN duplicate_object THEN NULL; END $$"
         )
     app_dsn = make_conninfo(admin_dsn, dbname="ig_trader")
-    with psycopg.connect(app_dsn) as connection:
-        sources = load_migration_sources(MIGRATION_ROOT)
-        apply_required_migrations(connection, sources, BOOTSTRAP_PRINCIPAL_NAME)
-        connection.execute(
-            f'ALTER TABLE trading.shadow_position_state OWNER TO "{DURABLE_OWNER_NAME}"'
-        )
-        apply_runtime_grants(connection)
-        before_schema = inspect_schema(connection)
-        before_ownership = inspect_ownership(connection)
-        connection.commit()
-
     runtime_principal = PrincipalRecord(
         role_name=RUNTIME_PRINCIPAL_NAME,
         principal_type="service",
@@ -1029,21 +1093,89 @@ def test_real_postgresql_recovery_inspection_is_database_enforced_read_only(
         runtime_identity_object_id=RUNTIME_OBJECT_ID,
         orphan_identity_object_id=None,
     )
+    sources = load_migration_sources(MIGRATION_ROOT)
 
-    evidence = run_recovery_inspection(
-        config,
-        lambda: psycopg.connect(app_dsn),
-        lambda: psycopg.connect(admin_dsn),
-        MIGRATION_ROOT,
-    )
-    assert evidence["classification"] == "MIGRATION_003_COMPLETE_DURABLE_OWNED"
+    def assert_recovery_is_unchanged(
+        expected_classification: str,
+        *,
+        include_shadow_position_state: bool,
+    ) -> dict[str, object]:
+        with psycopg.connect(app_dsn) as connection:
+            before = (
+                inspect_schema(connection),
+                inspect_ownership(connection),
+                read_exact_runtime_privileges(
+                    connection,
+                    include_shadow_position_state=include_shadow_position_state,
+                ),
+            )
+            connection.commit()
+        evidence = run_recovery_inspection(
+            config,
+            lambda: psycopg.connect(app_dsn),
+            lambda: psycopg.connect(admin_dsn),
+            MIGRATION_ROOT,
+        )
+        assert evidence["classification"] == expected_classification
+        assert evidence["legacy_position_state_deal_id_not_null"] is True
+        with psycopg.connect(app_dsn) as connection:
+            after = (
+                inspect_schema(connection),
+                inspect_ownership(connection),
+                read_exact_runtime_privileges(
+                    connection,
+                    include_shadow_position_state=include_shadow_position_state,
+                ),
+            )
+            assert before == after
+        return evidence
 
     with psycopg.connect(app_dsn) as connection:
-        after_schema = inspect_schema(connection)
-        after_ownership = inspect_ownership(connection)
-        assert before_schema == after_schema
-        assert before_ownership == after_ownership
+        apply_required_migrations(connection, sources[:2], BOOTSTRAP_PRINCIPAL_NAME)
+        _grant_recovery_runtime_privileges(
+            connection,
+            include_shadow_position_state=False,
+        )
+        connection.commit()
+
+    absent = assert_recovery_is_unchanged(
+        "MIGRATION_003_ABSENT",
+        include_shadow_position_state=False,
+    )
+    assert absent["migration_003"] == "ABSENT"
+
+    with psycopg.connect(app_dsn) as connection:
+        apply_required_migrations(connection, sources, BOOTSTRAP_PRINCIPAL_NAME)
+        connection.execute(
+            f'ALTER TABLE trading.shadow_position_state OWNER TO "{DURABLE_OWNER_NAME}"'
+        )
+        _grant_recovery_runtime_privileges(
+            connection,
+            include_shadow_position_state=True,
+        )
+        connection.commit()
+
+    complete = assert_recovery_is_unchanged(
+        "MIGRATION_003_COMPLETE_DURABLE_OWNED",
+        include_shadow_position_state=True,
+    )
+    assert complete["migration_003"] == "COMPLETE"
+
+    with psycopg.connect(app_dsn) as connection:
+        connection.execute(
+            "DROP TRIGGER shadow_position_state_require_fence ON trading.shadow_position_state"
+        )
+        connection.commit()
+
+    drift = assert_recovery_is_unchanged(
+        "DATABASE_SCHEMA_DRIFT",
+        include_shadow_position_state=True,
+    )
+    assert drift["drift_classification"] == "DATABASE_SCHEMA_DRIFT"
+
+    with psycopg.connect(app_dsn) as connection:
         _begin_read_only_transaction(connection)
+        assert connection.execute("SHOW transaction_read_only").fetchone()[0] == "on"
         with pytest.raises(psycopg.errors.ReadOnlySqlTransaction):
             connection.execute("CREATE TABLE trading.recovery_inspection_must_fail (id int)")
         connection.rollback()

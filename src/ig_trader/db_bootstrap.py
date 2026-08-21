@@ -1054,7 +1054,11 @@ _FUNCTION_SIGNATURES = (
 )
 
 
-def read_exact_runtime_privileges(connection: Any) -> RuntimePrivilegeAudit:
+def read_exact_runtime_privileges(
+    connection: Any,
+    *,
+    include_shadow_position_state: bool = True,
+) -> RuntimePrivilegeAudit:
     """Audit effective privileges by object OID, even when schema USAGE is absent."""
 
     role = RUNTIME_PRINCIPAL_NAME
@@ -1088,14 +1092,17 @@ def read_exact_runtime_privileges(connection: Any) -> RuntimePrivilegeAudit:
         """
     ).fetchall()
     table_oids = {str(row[0]): int(row[1]) for row in table_rows}
-    if set(table_oids) != set(_TABLE_PRIVILEGES):
+    expected_table_privileges = dict(_TABLE_PRIVILEGES)
+    if not include_shadow_position_state:
+        expected_table_privileges.pop("shadow_position_state")
+    if set(table_oids) != set(expected_table_privileges):
         raise DatabaseSchemaDrift("runtime table footprint differs from review")
     table_privileges: list[tuple[str, tuple[str, ...]]] = []
     missing: list[str] = []
     prohibited: list[str] = []
     for table, oid in sorted(table_oids.items()):
         actual: list[str] = []
-        required = _TABLE_PRIVILEGES[table]
+        required = expected_table_privileges[table]
         for privilege in ("SELECT", "INSERT", "UPDATE", "DELETE"):
             present = bool(
                 connection.execute(
@@ -1876,10 +1883,13 @@ def _recovery_classification(
     runtime_audit: RuntimePrivilegeAudit | None,
     runtime_valid: bool,
     durable_owner_valid: bool,
+    legacy_deal_id_not_null: bool,
 ) -> str:
     if schema_drift or any(
         snapshot.state(migration) is MigrationState.PARTIAL_DRIFTED for migration in MIGRATIONS
     ):
+        return "DATABASE_SCHEMA_DRIFT"
+    if not legacy_deal_id_not_null:
         return "DATABASE_SCHEMA_DRIFT"
     if not durable_owner_valid:
         return "FAIL_CLOSED"
@@ -1951,9 +1961,13 @@ def run_recovery_inspection(
         runtime_matches = (
             runtime_matches and runtime.object_id == config.runtime_identity_object_id.casefold()
         )
+        migration_003_complete = snapshot.state(MIGRATION_003) is MigrationState.COMPLETE
         runtime_audit: RuntimePrivilegeAudit | None
         try:
-            runtime_audit = read_exact_runtime_privileges(connection)
+            runtime_audit = read_exact_runtime_privileges(
+                connection,
+                include_shadow_position_state=migration_003_complete,
+            )
         except (DatabaseSchemaDrift, IdentityMismatch):
             runtime_audit = None
         runtime_valid = (
@@ -1977,6 +1991,7 @@ def run_recovery_inspection(
             runtime_audit,
             runtime_valid,
             durable_owner_valid and durable_mapping_absent,
+            deal_id_not_null,
         )
         connection.rollback()
     runtime_evidence = (
