@@ -1,7 +1,9 @@
 import os
+from dataclasses import replace
 from datetime import UTC, datetime
 from pathlib import Path
 from types import SimpleNamespace
+from uuid import uuid4
 
 import pytest
 
@@ -44,6 +46,14 @@ def _local_dsn() -> str:
 
 def _signal() -> SimpleNamespace:
     return SimpleNamespace(direction=SimpleNamespace(value="BUY"), strategy_name="S0", epic=EPIC)
+
+
+def test_postgres_shadow_store_proof_is_wired_into_ci() -> None:
+    workflow = (ROOT / ".github/workflows/ci.yaml").read_text(encoding="utf-8")
+
+    assert "tests-g4c-shadow-postgres-store.xml" in workflow
+    assert "test_postgres_shadow_store_lifecycle_restart_and_fencing" in workflow
+    assert 'RUN_POSTGRES_INTEGRATION: "1"' in workflow
 
 
 def test_postgres_shadow_store_lifecycle_restart_and_fencing() -> None:
@@ -91,6 +101,7 @@ def test_postgres_shadow_store_lifecycle_restart_and_fencing() -> None:
         daily_loss_pct=0,
         now=NOW,
     )
+    assert store.active_position_count() == 1
     assert store.get(intent.intent_id) == intent
     assert (
         core.create_intent(
@@ -121,6 +132,7 @@ def test_postgres_shadow_store_lifecycle_restart_and_fencing() -> None:
     created = restarted_store.get(intent.intent_id)
     assert created is not None and created.lifecycle is ShadowLifecycle.SHADOW_INTENT_CREATED
     opened = core.open_intent(created, now=NOW)
+    assert restarted_store.active_position_count() == 1
     assert restarted_store.get(intent.intent_id) == opened
     closed = core.close_on_quote(
         opened,
@@ -128,6 +140,7 @@ def test_postgres_shadow_store_lifecycle_restart_and_fencing() -> None:
         now=NOW,
     )
     assert closed.lifecycle is ShadowLifecycle.CLOSED
+    assert restarted_store.active_position_count() == 0
     closed_after_restart = PostgresShadowStore(coordinator, connection_factory).get(
         intent.intent_id
     )
@@ -144,6 +157,32 @@ def test_postgres_shadow_store_lifecycle_restart_and_fencing() -> None:
         ttl_seconds=30,
     )
     assert successor.try_acquire()
+    successor_store = PostgresShadowStore(successor, connection_factory)
+    stale_intent_id = uuid4()
+    stale_record = replace(
+        intent,
+        shadow_position_id=uuid4(),
+        intent_id=stale_intent_id,
+        fencing_token=stale_lease.fencing_token,
+    )
+    with pytest.raises(ShadowExecutionError, match="stale"):
+        successor_store.put(stale_record)
+    with connection_factory() as connection:
+        assert (
+            connection.execute(
+                "SELECT count(*) FROM trading.trade_intents WHERE intent_id = %s",
+                (stale_intent_id,),
+            ).fetchone()[0]
+            == 0
+        )
+        assert (
+            connection.execute(
+                "SELECT count(*) FROM trading.shadow_position_state WHERE intent_id = %s",
+                (stale_intent_id,),
+            ).fetchone()[0]
+            == 0
+        )
+
     stale_coordinator = SimpleNamespace(
         authorized=True,
         lease=stale_lease,
