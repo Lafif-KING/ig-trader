@@ -493,40 +493,48 @@ def test_execution_nonce_rejects_unlinkable_values(nonce: str) -> None:
         validate_execution_nonce(nonce)
 
 
-def test_execution_nonce_prefers_explicit_value() -> None:
+def test_explicit_execution_nonce_wins_over_azure_fallback() -> None:
     assert (
         resolve_execution_nonce(
-            "explicit-nonce-1234",
-            {"CONTAINER_APP_JOB_EXECUTION_NAME": "azure-execution-5678"},
+            "manual-nonce-123",
+            {"CONTAINER_APP_JOB_EXECUTION_NAME": "azure-job-abcdef"},
         )
-        == "explicit-nonce-1234"
+        == "manual-nonce-123"
     )
 
 
-def test_execution_nonce_uses_azure_job_execution_name() -> None:
-    assert (
-        resolve_execution_nonce(
-            None,
-            {"CONTAINER_APP_JOB_EXECUTION_NAME": "azure-execution-5678"},
-        )
-        == "azure-execution-5678"
-    )
+def test_azure_job_execution_name_is_the_deterministic_nonce_fallback() -> None:
+    environment = {"CONTAINER_APP_JOB_EXECUTION_NAME": "my-job-iwpi4il"}
+    assert resolve_execution_nonce(None, environment) == "my-job-iwpi4il"
+    assert resolve_execution_nonce(None, environment) == "my-job-iwpi4il"
+    assert resolve_execution_nonce(
+        None, {"CONTAINER_APP_JOB_EXECUTION_NAME": "my-job-other1"}
+    ) != resolve_execution_nonce(None, environment)
 
 
 @pytest.mark.parametrize(
-    ("explicit", "environment"),
+    "environment",
     [
-        (None, {}),
-        (None, {"CONTAINER_APP_JOB_EXECUTION_NAME": "short"}),
-        ("short", {"CONTAINER_APP_JOB_EXECUTION_NAME": "azure-execution-5678"}),
+        {},
+        {"CONTAINER_APP_JOB_EXECUTION_NAME": "short"},
+        {"CONTAINER_APP_JOB_EXECUTION_NAME": "bad execution"},
+        {"CONTAINER_APP_JOB_EXECUTION_NAME": "bad.dot.value"},
+        {"CONTAINER_APP_JOB_EXECUTION_NAME": "a" * 65},
     ],
 )
-def test_execution_nonce_resolution_fails_closed(
-    explicit: str | None,
+def test_missing_or_malformed_azure_execution_name_fails_closed(
     environment: dict[str, str],
 ) -> None:
     with pytest.raises(BootstrapError, match="nonce"):
-        resolve_execution_nonce(explicit, environment)
+        resolve_execution_nonce(None, environment)
+
+
+def test_malformed_explicit_nonce_does_not_fall_back() -> None:
+    with pytest.raises(BootstrapError, match="nonce"):
+        resolve_execution_nonce(
+            "bad",
+            {"CONTAINER_APP_JOB_EXECUTION_NAME": "valid-azure-execution"},
+        )
 
 
 def test_schema_inspection_evidence_has_required_read_only_contract() -> None:

@@ -2460,6 +2460,8 @@ def resolve_execution_nonce(
     cli_nonce: str | None,
     environment: Mapping[str, str],
 ) -> str:
+    """Resolve the explicit nonce before the unique Azure job execution name."""
+
     if cli_nonce is not None:
         return validate_execution_nonce(cli_nonce)
     azure_execution_name = environment.get("CONTAINER_APP_JOB_EXECUTION_NAME", "")

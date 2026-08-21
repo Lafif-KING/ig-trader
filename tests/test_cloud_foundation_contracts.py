@@ -178,3 +178,13 @@ def test_immutable_image_reference_rejects_incomplete_or_invalid_digests() -> No
     ):
         with pytest.raises(ValueError):
             validate_immutable_image_reference(image)
+
+
+def test_db_bootstrap_deployment_validates_image_before_azure_mutation() -> None:
+    deployment = _read("tools/codex/deploy-db-bootstrap.ps1")
+
+    validation = deployment.index("tools/validate_immutable_image.py")
+    azure_mutation = deployment.index("az deployment group create")
+    assert validation < azure_mutation
+    assert "if ($LASTEXITCODE -ne 0)" in deployment[validation:azure_mutation]
+    assert "ValidateOnly" in deployment
