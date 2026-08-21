@@ -129,6 +129,14 @@ jobs:
             --junitxml=artifacts/ci/tests-g4b-lease-fencing.xml \
             tests/test_execution_lease.py::test_postgresql_rejects_unfenced_and_stale_state_changes
 
+      - name: G4C durable PostgreSQL shadow-store proof
+        env:
+          RUN_POSTGRES_INTEGRATION: "1"
+        run: |
+          timeout --signal=TERM --kill-after=10s 60s poetry run pytest -q \
+            --junitxml=artifacts/ci/tests-g4c-shadow-postgres-store.xml \
+            tests/test_shadow_postgres_store.py::test_postgres_shadow_store_lifecycle_restart_and_fencing
+
       - name: G4B PostgreSQL two-process handoff proof
         env:
           RUN_POSTGRES_INTEGRATION: "1"
