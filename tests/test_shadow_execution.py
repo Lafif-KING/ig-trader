@@ -107,6 +107,17 @@ def test_true_stale_fencing_token_cannot_change_state() -> None:
     assert store.get(opened.intent_id) == opened
 
 
+def test_in_memory_active_position_count_is_conservative() -> None:
+    execution, store = core()
+    assert store.active_position_count() == 0
+    intent = create(execution)
+    assert store.active_position_count() == 1
+    opened = execution.open_intent(intent, now=NOW)
+    assert store.active_position_count() == 1
+    execution.close_on_quote(opened, quote(bid=0.8510, offer=0.8512), now=NOW)
+    assert store.active_position_count() == 0
+
+
 @pytest.mark.parametrize(
     "market",
     [
