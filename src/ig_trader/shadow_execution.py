@@ -384,6 +384,8 @@ class ShadowExecutionCore:
 
     def _fencing_token(self) -> int:
         token = getattr(self.lease, "fencing_token", None)
+        if token is None and getattr(self.lease, "lease", None) is not None:
+            token = self.lease.lease.fencing_token
         if not isinstance(token, int) or token <= 0:
             raise ShadowExecutionError("shadow fencing token is unavailable")
         return token
