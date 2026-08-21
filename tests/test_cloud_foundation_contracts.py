@@ -5,6 +5,10 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
+import pytest
+
+from tools.validate_immutable_image import validate_immutable_image_reference
+
 ROOT = Path(__file__).resolve().parents[1]
 
 
@@ -159,3 +163,18 @@ def test_postgresql_migration_covers_durable_trading_state() -> None:
 def test_offline_sqlite_paths_are_not_replaced() -> None:
     assert "sqlite3" in _read("src/ig_trader/offline_paper/persistence.py")
     assert 'DATABASE_URL = "sqlite:///./trading.db"' in _read("src/ig_trader/database.py")
+
+
+def test_immutable_image_reference_rejects_incomplete_or_invalid_digests() -> None:
+    valid = "registry.example/ig-trader@sha256:" + "a" * 64
+    assert validate_immutable_image_reference(valid) == valid
+    for image in (
+        "registry.example/ig-trader@sha256",
+        "registry.example/ig-trader@sha256:",
+        "registry.example/ig-trader@sha256:null",
+        "registry.example/ig-trader@sha256:" + "a" * 63,
+        "registry.example/ig-trader@sha256:" + "g" * 64,
+        "registry.example/ig-trader:latest",
+    ):
+        with pytest.raises(ValueError):
+            validate_immutable_image_reference(image)
