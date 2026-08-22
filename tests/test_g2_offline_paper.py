@@ -420,7 +420,9 @@ def test_launcher_proves_zero_network_and_broker_calls(tmp_path: Path) -> None:
     environment = {**os.environ, "PYTHONPATH": str(ROOT)}
     repository_database = ROOT / "trading.db"
     database_before = (
-        repository_database.read_bytes() if repository_database.exists() else None
+        repository_database.read_bytes()
+        if repository_database.exists()
+        else None
     )
 
     completed = subprocess.run(
@@ -445,7 +447,9 @@ def test_launcher_proves_zero_network_and_broker_calls(tmp_path: Path) -> None:
     assert not network["lightstreamer_instantiated"]
     assert not network["credentials_resolved"]
     database_after = (
-        repository_database.read_bytes() if repository_database.exists() else None
+        repository_database.read_bytes()
+        if repository_database.exists()
+        else None
     )
     assert database_after == database_before
 
