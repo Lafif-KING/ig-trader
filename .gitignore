@@ -1,6 +1,15 @@
 .env
 .env.local
 .env.*.local
+.envrc
+.secrets/
+secrets/
+*.pem
+*.key
+*.p12
+*.pfx
+id_rsa
+id_ed25519
 .vs/
 __pycache__/
 *.pyc
@@ -10,3 +19,7 @@ test_connection.py
 .runtime/
 **/__pycache__/
 *.py[cod]
+trading.db
+*.db-journal
+*.sqlite
+*.sqlite3

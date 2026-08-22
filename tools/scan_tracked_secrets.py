@@ -37,6 +37,15 @@ _TEXT_SUFFIXES = {
     ".yaml",
     ".yml",
 }
+_FORBIDDEN_TRACKED_PATHS = (
+    re.compile(r"(?:^|/)__pycache__(?:/|$)"),
+    re.compile(r"\.py[co]$", re.IGNORECASE),
+    re.compile(r"(?:^|/)trading\.db$", re.IGNORECASE),
+    re.compile(r"(?:^|/)\.env$", re.IGNORECASE),
+    re.compile(r"(?:^|/)(?:\.secrets|secrets)(?:/|$)", re.IGNORECASE),
+    re.compile(r"(?:^|/)(?:id_rsa|id_ed25519)$", re.IGNORECASE),
+    re.compile(r"\.(?:pem|key|p12|pfx)$", re.IGNORECASE),
+)
 
 
 def _tracked_files() -> tuple[Path, ...]:
@@ -52,13 +61,17 @@ def _tracked_files() -> tuple[Path, ...]:
 def scan() -> list[tuple[str, int, str]]:
     findings: list[tuple[str, int, str]] = []
     for path in _tracked_files():
+        relative = path.relative_to(ROOT).as_posix()
+        for pattern in _FORBIDDEN_TRACKED_PATHS:
+            if pattern.search(relative):
+                findings.append((relative, 0, "forbidden_tracked_path"))
+                break
         if not path.is_file() or path.suffix.casefold() not in _TEXT_SUFFIXES:
             continue
         try:
             content = path.read_text(encoding="utf-8")
         except UnicodeDecodeError:
             continue
-        relative = path.relative_to(ROOT).as_posix()
         for line_number, line in enumerate(content.splitlines(), start=1):
             for rule, pattern in _HIGH_CONFIDENCE.items():
                 if pattern.search(line):
@@ -73,7 +86,8 @@ def main() -> int:
     findings = scan()
     if findings:
         for path, line, rule in findings:
-            print(f"secret-pattern finding: {path}:{line} rule={rule}")
+            location = f"{path}:{line}" if line else path
+            print(f"secret-pattern finding: {location} rule={rule}")
         return 1
     print("secret-pattern scan passed; findings=0")
     return 0
