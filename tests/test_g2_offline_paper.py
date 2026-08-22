@@ -418,7 +418,10 @@ def test_launcher_proves_zero_network_and_broker_calls(tmp_path: Path) -> None:
         str(evidence_md),
     ]
     environment = {**os.environ, "PYTHONPATH": str(ROOT)}
-    database_mtime = (ROOT / "trading.db").stat().st_mtime_ns
+    repository_database = ROOT / "trading.db"
+    database_before = (
+        repository_database.read_bytes() if repository_database.exists() else None
+    )
 
     completed = subprocess.run(
         command,
@@ -441,7 +444,10 @@ def test_launcher_proves_zero_network_and_broker_calls(tmp_path: Path) -> None:
     assert not network["ig_rest_instantiated"]
     assert not network["lightstreamer_instantiated"]
     assert not network["credentials_resolved"]
-    assert (ROOT / "trading.db").stat().st_mtime_ns == database_mtime
+    database_after = (
+        repository_database.read_bytes() if repository_database.exists() else None
+    )
+    assert database_after == database_before
 
 
 def test_isolation_blocks_socket_clients_credentials_and_order_modules() -> None:
