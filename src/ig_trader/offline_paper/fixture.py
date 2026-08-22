@@ -10,13 +10,8 @@ from math import isfinite
 from pathlib import Path
 from typing import Any
 
+from src.ig_trader.frozen_v1_policy import FROZEN_INSTRUMENTS
 from src.ig_trader.offline_paper.domain import Candle, Quote
-
-FROZEN_INSTRUMENTS = (
-    ("EURGBP", "CS.D.EURGBP.MINI.IP", "EUR", "GBP"),
-    ("EURUSD", "CS.D.EURUSD.MINI.IP", "EUR", "USD"),
-    ("GBPUSD", "CS.D.GBPUSD.MINI.IP", "GBP", "USD"),
-)
 
 
 @dataclass(frozen=True)
