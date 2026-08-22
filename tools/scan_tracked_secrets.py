@@ -41,7 +41,7 @@ _FORBIDDEN_TRACKED_PATHS = (
     re.compile(r"(?:^|/)__pycache__(?:/|$)"),
     re.compile(r"\.py[co]$", re.IGNORECASE),
     re.compile(r"(?:^|/)trading\.db$", re.IGNORECASE),
-    re.compile(r"(?:^|/)\.env$", re.IGNORECASE),
+    re.compile(r"(?:^|/)\.env(?:$|\.(?!example$)[^/]+$)", re.IGNORECASE),
     re.compile(r"(?:^|/)(?:\.secrets|secrets)(?:/|$)", re.IGNORECASE),
     re.compile(r"(?:^|/)(?:id_rsa|id_ed25519)$", re.IGNORECASE),
     re.compile(r"\.(?:pem|key|p12|pfx)$", re.IGNORECASE),

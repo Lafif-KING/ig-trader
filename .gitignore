@@ -1,6 +1,6 @@
 .env
-.env.local
-.env.*.local
+.env.*
+!.env.example
 .envrc
 .secrets/
 secrets/
@@ -21,5 +21,9 @@ test_connection.py
 *.py[cod]
 trading.db
 *.db-journal
+*.db-wal
+*.db-shm
 *.sqlite
 *.sqlite3
+*.sqlite-wal
+*.sqlite-shm

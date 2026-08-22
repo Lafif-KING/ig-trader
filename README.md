@@ -16,12 +16,21 @@ committed, logged, or shared.
 
 ## Execution modes
 
-- `PAPER_TRADING=true` is the normal safe development configuration.
-- Demo execution requires a separately authorized, controlled qualification.
-- Live execution remains disabled and requires explicit product-owner approval.
+- `NO_EXECUTION` is the mode of the currently deployed Azure worker. It has no
+  trading-worker authority.
+- `SHADOW_DEMO` permits IG Demo market reads and hypothetical execution only.
+  It is permanently `authorized=false` and `order_authority=false`.
+- `DEMO_EXECUTION` is disabled and requires separate controlled qualification.
+- `LIVE_EXECUTION` is disabled. Live trading requires explicit Afif approval.
 
-The current active bot execution scope is EUR/GBP Mini only. Broker-neutral
-research and Paper qualification are separate from this scope.
+Broker execution is disabled. The frozen V1 Shadow scope is limited to:
+
+- `CS.D.EURGBP.MINI.IP`
+- `CS.D.EURUSD.CEFM.IP`
+- `CS.D.GBPUSD.MINI.IP`
+
+Research and Paper qualification remain separate from Shadow mode. The project
+does not promise profitability.
 
 ## Development setup
 
