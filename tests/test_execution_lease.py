@@ -20,6 +20,7 @@ from src.ig_trader.execution_lease import (
     EXECUTION_LEASE_NAME,
     POSTGRES_ENTRA_SCOPE,
     ExecutionLeaseCoordinator,
+    FencedCallbackRejected,
     FencedOperation,
     FencingRejected,
     LeaseDatabaseError,
@@ -251,6 +252,123 @@ def test_ambiguous_fence_state_stops_stateful_work_and_demotes() -> None:
 
     assert replica.role is RuntimeRole.STANDBY
     assert replica.authorized is False
+
+
+def test_callback_rejection_preserves_a_valid_leader() -> None:
+    store = MemoryLeaseStore()
+    leader = _coordinator(store, "replica-a")
+    assert leader.try_acquire()
+
+    def reject(_cursor: Any) -> None:
+        raise FencedCallbackRejected("sanitized domain rejection")
+
+    with pytest.raises(FencedCallbackRejected, match="sanitized domain rejection"):
+        leader.run_state_change(FencedOperation.TRADE_INTENT, reject)
+
+    assert leader.authorized is True
+    assert leader.lease is not None
+    assert leader.role is RuntimeRole.LEADER
+
+
+def test_postgres_fenced_callback_rejection_rolls_back_without_conversion() -> None:
+    class Cursor:
+        def __init__(self) -> None:
+            self.statements: list[str] = []
+
+        def __enter__(self) -> Cursor:
+            return self
+
+        def __exit__(self, _type: object, _value: object, _traceback: object) -> bool:
+            return False
+
+        def execute(self, statement: str, _parameters: object = None) -> None:
+            self.statements.append(statement)
+
+    class Connection:
+        def __init__(self) -> None:
+            self.cursor_value = Cursor()
+            self.rolled_back = False
+
+        def __enter__(self) -> Connection:
+            return self
+
+        def __exit__(self, error_type: object, _value: object, _traceback: object) -> bool:
+            self.rolled_back = error_type is not None
+            return False
+
+        def cursor(self) -> Cursor:
+            return self.cursor_value
+
+    connection = Connection()
+    store = PostgresExecutionLeaseStore(lambda: connection)
+    lease = LeaseRecord(
+        lease_name=EXECUTION_LEASE_NAME,
+        holder_instance_id="replica-a",
+        fencing_token=1,
+        acquired_at=datetime.now(UTC),
+        heartbeat_at=datetime.now(UTC),
+        expires_at=datetime.now(UTC) + timedelta(seconds=2),
+    )
+
+    rejection = FencedCallbackRejected("duplicate shadow intent conflicts")
+
+    def reject(cursor: Cursor) -> None:
+        cursor.execute("INSERT domain_change")
+        raise rejection
+
+    with pytest.raises(
+        FencedCallbackRejected, match="duplicate shadow intent conflicts"
+    ) as raised:
+        store.run_fenced(lease, FencedOperation.TRADE_INTENT, reject)
+
+    assert raised.value is rejection
+    assert connection.rolled_back is True
+    assert len(connection.cursor_value.statements) == 2
+
+
+def test_postgres_unexpected_callback_error_remains_fencing_rejection() -> None:
+    class Cursor:
+        def __enter__(self) -> Cursor:
+            return self
+
+        def __exit__(self, _type: object, _value: object, _traceback: object) -> bool:
+            return False
+
+        def execute(self, _statement: str, _parameters: object = None) -> None:
+            return None
+
+    class Connection:
+        def __init__(self) -> None:
+            self.rolled_back = False
+
+        def __enter__(self) -> Connection:
+            return self
+
+        def __exit__(self, error_type: object, _value: object, _traceback: object) -> bool:
+            self.rolled_back = error_type is not None
+            return False
+
+        def cursor(self) -> Cursor:
+            return Cursor()
+
+    connection = Connection()
+    store = PostgresExecutionLeaseStore(lambda: connection)
+    lease = LeaseRecord(
+        lease_name=EXECUTION_LEASE_NAME,
+        holder_instance_id="replica-a",
+        fencing_token=1,
+        acquired_at=datetime.now(UTC),
+        heartbeat_at=datetime.now(UTC),
+        expires_at=datetime.now(UTC) + timedelta(seconds=2),
+    )
+
+    def unexpected(_cursor: Cursor) -> None:
+        raise RuntimeError("unexpected database callback failure")
+
+    with pytest.raises(FencingRejected, match="execution fencing validation failed closed"):
+        store.run_fenced(lease, FencedOperation.TRADE_INTENT, unexpected)
+
+    assert connection.rolled_back is True
 
 
 @pytest.mark.parametrize("operation", list(FencedOperation))

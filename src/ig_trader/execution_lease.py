@@ -79,6 +79,10 @@ class FencingRejected(LeaseError):
     """The supplied lease fence is stale, expired, or cannot be proven current."""
 
 
+class FencedCallbackRejected(LeaseError):
+    """A sanitized deterministic domain rejection inside a fenced transaction."""
+
+
 class StatefulWorkProhibited(LeaseError):
     """The process has no current stateful-work authority."""
 
@@ -251,6 +255,8 @@ class PostgresExecutionLeaseStore:
                     ),
                 )
                 return callback(cursor)
+        except FencedCallbackRejected:
+            raise
         except Exception:
             raise FencingRejected("execution fencing validation failed closed") from None
 

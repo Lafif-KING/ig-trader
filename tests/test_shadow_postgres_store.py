@@ -13,6 +13,7 @@ from src.ig_trader.execution_lease import (
     ExecutionLeaseCoordinator,
     FencedOperation,
     PostgresExecutionLeaseStore,
+    RuntimeRole,
 )
 from src.ig_trader.shadow_execution import (
     ExecutionMode,
@@ -146,6 +147,25 @@ def test_postgres_shadow_store_lifecycle_restart_and_fencing() -> None:
             daily_loss_pct=0,
             now=NOW,
         )
+    assert coordinator.authorized is True
+    assert coordinator.lease is not None
+    assert coordinator.role is RuntimeRole.LEADER
+    assert store.get(intent.intent_id) == intent
+    with connection_factory() as connection:
+        assert (
+            connection.execute(
+                "SELECT count(*) FROM trading.trade_intents WHERE intent_id = %s",
+                (intent.intent_id,),
+            ).fetchone()[0]
+            == 1
+        )
+        assert (
+            connection.execute(
+                "SELECT count(*) FROM trading.shadow_position_state WHERE intent_id = %s",
+                (intent.intent_id,),
+            ).fetchone()[0]
+            == 0
+        )
 
     restarted_store = PostgresShadowStore(coordinator, connection_factory)
     created = restarted_store.get(intent.intent_id)
@@ -170,7 +190,7 @@ def test_postgres_shadow_store_lifecycle_restart_and_fencing() -> None:
     stale_lease = coordinator.lease
     assert stale_lease is not None
     handoff_retry = store.put(_record(uuid4(), stale_lease.fencing_token))
-    assert coordinator.release()
+    assert lease_store.release(stale_lease)
     successor = ExecutionLeaseCoordinator(
         store=lease_store,
         replica_instance_id="shadow-store-successor",
@@ -204,14 +224,7 @@ def test_postgres_shadow_store_lifecycle_restart_and_fencing() -> None:
             == 0
         )
 
-    stale_coordinator = SimpleNamespace(
-        authorized=True,
-        lease=stale_lease,
-        run_state_change=lambda operation, callback: lease_store.run_fenced(
-            stale_lease, operation, callback
-        ),
-    )
-    stale_store = PostgresShadowStore(stale_coordinator, connection_factory)
+    stale_store = PostgresShadowStore(coordinator, connection_factory)
     with pytest.raises(ShadowExecutionError):
         stale_store.transition(
             handoff_retry.intent_id,
@@ -220,6 +233,9 @@ def test_postgres_shadow_store_lifecycle_restart_and_fencing() -> None:
             stale_lease.fencing_token,
             updated_at=NOW,
         )
+    assert coordinator.authorized is False
+    assert coordinator.lease is None
+    assert coordinator.role is RuntimeRole.STANDBY
 
     with connection_factory() as connection:
         assert (
@@ -320,6 +336,9 @@ def test_postgres_shadow_store_lifecycle_restart_and_fencing() -> None:
     with ThreadPoolExecutor(max_workers=2) as executor:
         outcomes = list(executor.map(attempt, concurrent_records))
     assert sum(saved for saved, _record_value in outcomes) == 1
+    assert successor.authorized is True
+    assert successor.lease is not None
+    assert successor.role is RuntimeRole.LEADER
     winner = next(record for saved, record in outcomes if saved)
     assert winner is not None
     with connection_factory() as connection:
@@ -466,8 +485,28 @@ def test_postgres_shadow_store_lifecycle_restart_and_fencing() -> None:
         ShadowLifecycle.FAILED_SAFE,
         ShadowLifecycle.RECONCILED,
     )
+    blocked_intent_id = uuid4()
     with pytest.raises(ShadowExecutionError, match="unresolved"):
-        successor_store.put(_record(uuid4(), successor_lease.fencing_token))
+        successor_store.put(_record(blocked_intent_id, successor_lease.fencing_token))
+    assert successor.authorized is True
+    assert successor.lease is not None
+    assert successor.role is RuntimeRole.LEADER
+    assert successor_store.get(failed.intent_id) == failed
+    with connection_factory() as connection:
+        assert (
+            connection.execute(
+                "SELECT count(*) FROM trading.trade_intents WHERE intent_id = %s",
+                (blocked_intent_id,),
+            ).fetchone()[0]
+            == 0
+        )
+        assert (
+            connection.execute(
+                "SELECT count(*) FROM trading.shadow_position_state WHERE intent_id = %s",
+                (blocked_intent_id,),
+            ).fetchone()[0]
+            == 0
+        )
     assert successor_store.active_position_count() == 1
 
     with connection_factory() as connection:
