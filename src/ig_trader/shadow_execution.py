@@ -155,7 +155,12 @@ class InMemoryShadowStore:
 
     def active_position_count(self) -> int:
         return sum(
-            record.lifecycle in {ShadowLifecycle.SHADOW_INTENT_CREATED, ShadowLifecycle.OPEN}
+            record.lifecycle
+            in {
+                ShadowLifecycle.SHADOW_INTENT_CREATED,
+                ShadowLifecycle.OPEN,
+                ShadowLifecycle.FAILED_SAFE,
+            }
             for record in self.records.values()
         )
 

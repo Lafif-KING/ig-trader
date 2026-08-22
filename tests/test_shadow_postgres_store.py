@@ -214,9 +214,9 @@ def test_postgres_shadow_store_lifecycle_restart_and_fencing() -> None:
     stale_store = PostgresShadowStore(stale_coordinator, connection_factory)
     with pytest.raises(ShadowExecutionError):
         stale_store.transition(
-            intent.intent_id,
-            ShadowLifecycle.RECONCILED,
-            ShadowLifecycle.CLOSED,
+            handoff_retry.intent_id,
+            ShadowLifecycle.SHADOW_INTENT_CREATED,
+            ShadowLifecycle.OPEN,
             stale_lease.fencing_token,
             updated_at=NOW,
         )
@@ -225,9 +225,9 @@ def test_postgres_shadow_store_lifecycle_restart_and_fencing() -> None:
         assert (
             connection.execute(
                 "SELECT count(*) FROM trading.shadow_position_state WHERE intent_id = %s",
-                (intent.intent_id,),
+                (handoff_retry.intent_id,),
             ).fetchone()[0]
-            == 1
+            == 0
         )
 
     successor_lease = successor.lease
@@ -239,6 +239,53 @@ def test_postgres_shadow_store_lifecycle_restart_and_fencing() -> None:
         risk_gate=lambda *_a, **_k: True,
         instruments=InstrumentRegistry.frozen_v1(),
     )
+
+    def durable_snapshot(intent_id: UUID) -> tuple[list[object], list[object]]:
+        with connection_factory() as connection:
+            intent_rows = connection.execute(
+                """
+                SELECT lifecycle_state, intent_payload, updated_at
+                FROM trading.trade_intents
+                WHERE intent_id = %s
+                """,
+                (intent_id,),
+            ).fetchall()
+            position_rows = connection.execute(
+                """
+                SELECT status, fencing_token, opened_at, closed_at, exit_price,
+                       exit_reason, updated_at
+                FROM trading.shadow_position_state
+                WHERE intent_id = %s
+                """,
+                (intent_id,),
+            ).fetchall()
+        return intent_rows, position_rows
+
+    def assert_invalid_transition(
+        record: ShadowIntentRecord,
+        from_state: ShadowLifecycle,
+        to_state: ShadowLifecycle,
+    ) -> None:
+        before = durable_snapshot(record.intent_id)
+        with pytest.raises(ShadowExecutionError, match="invalid"):
+            successor_store.transition(
+                record.intent_id,
+                from_state,
+                to_state,
+                successor_lease.fencing_token,
+                updated_at=NOW,
+            )
+        assert durable_snapshot(record.intent_id) == before
+
+    def close_and_reconcile(record: ShadowIntentRecord) -> ShadowIntentRecord:
+        opened_record = successor_core.open_intent(record, now=NOW)
+        closed_record = successor_core.close_on_quote(
+            opened_record,
+            MarketQuote(0.8510, 0.8512, NOW),
+            now=NOW,
+        )
+        return successor_core.reconcile(closed_record, now=NOW)
+
     retried_after_handoff = successor_store.put(
         replace(handoff_retry, fencing_token=successor_lease.fencing_token)
     )
@@ -298,6 +345,40 @@ def test_postgres_shadow_store_lifecycle_restart_and_fencing() -> None:
     )
     successor_core.reconcile(closed_winner, now=NOW)
 
+    invalid_created = successor_store.put(_record(uuid4(), successor_lease.fencing_token))
+    assert_invalid_transition(
+        invalid_created,
+        ShadowLifecycle.SHADOW_INTENT_CREATED,
+        ShadowLifecycle.CLOSED,
+    )
+    assert_invalid_transition(
+        invalid_created,
+        ShadowLifecycle.SHADOW_INTENT_CREATED,
+        ShadowLifecycle.RECONCILED,
+    )
+    invalid_open = successor_core.open_intent(invalid_created, now=NOW)
+    assert_invalid_transition(
+        invalid_open,
+        ShadowLifecycle.OPEN,
+        ShadowLifecycle.RECONCILED,
+    )
+    invalid_closed = successor_core.close_on_quote(
+        invalid_open,
+        MarketQuote(0.8510, 0.8512, NOW),
+        now=NOW,
+    )
+    assert_invalid_transition(
+        invalid_closed,
+        ShadowLifecycle.CLOSED,
+        ShadowLifecycle.OPEN,
+    )
+    invalid_reconciled = successor_core.reconcile(invalid_closed, now=NOW)
+    assert_invalid_transition(
+        invalid_reconciled,
+        ShadowLifecycle.RECONCILED,
+        ShadowLifecycle.CLOSED,
+    )
+
     retry_id = uuid4()
     retry = _record(retry_id, successor_lease.fencing_token)
     assert successor_store.put(retry) == retry
@@ -345,6 +426,26 @@ def test_postgres_shadow_store_lifecycle_restart_and_fencing() -> None:
     )
     successor_core.reconcile(closed_retry, now=NOW)
 
+    missing_position = successor_store.put(_record(uuid4(), successor_lease.fencing_token))
+    mutate(
+        "UPDATE trading.trade_intents SET lifecycle_state = 'OPEN' WHERE intent_id = %s",
+        (missing_position.intent_id,),
+    )
+    before_missing_read = durable_snapshot(missing_position.intent_id)
+    with pytest.raises(ShadowExecutionError, match="position"):
+        successor_store.get(missing_position.intent_id)
+    assert durable_snapshot(missing_position.intent_id) == before_missing_read
+    assert successor_store.active_position_count() == 1
+    mutate(
+        """
+        UPDATE trading.trade_intents
+        SET lifecycle_state = 'SHADOW_INTENT_CREATED'
+        WHERE intent_id = %s
+        """,
+        (missing_position.intent_id,),
+    )
+    close_and_reconcile(missing_position)
+
     failed = successor_store.put(_record(uuid4(), successor_lease.fencing_token))
     opened_failed = successor_core.open_intent(failed, now=NOW)
     failed = successor_store.transition(
@@ -355,6 +456,16 @@ def test_postgres_shadow_store_lifecycle_restart_and_fencing() -> None:
         updated_at=NOW,
     )
     assert failed.lifecycle is ShadowLifecycle.FAILED_SAFE
+    assert_invalid_transition(
+        failed,
+        ShadowLifecycle.FAILED_SAFE,
+        ShadowLifecycle.OPEN,
+    )
+    assert_invalid_transition(
+        failed,
+        ShadowLifecycle.FAILED_SAFE,
+        ShadowLifecycle.RECONCILED,
+    )
     with pytest.raises(ShadowExecutionError, match="unresolved"):
         successor_store.put(_record(uuid4(), successor_lease.fencing_token))
     assert successor_store.active_position_count() == 1
