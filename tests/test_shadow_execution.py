@@ -96,6 +96,19 @@ def test_duplicate_identical_is_idempotent_and_conflict_fails_closed() -> None:
     assert store.get(intent_id) == first
 
 
+def test_identical_retry_survives_fencing_successor_with_deterministic_position_id() -> None:
+    execution, store = core()
+    intent_id = uuid4()
+    first = create(execution, intent_id=intent_id)
+
+    execution.lease.fencing_token = 8
+    store.set_current_fencing_token(8)
+    retry = create(execution, intent_id=intent_id)
+
+    assert retry == first
+    assert first.shadow_position_id == retry.shadow_position_id
+
+
 def test_true_stale_fencing_token_cannot_change_state() -> None:
     execution, store = core()
     intent = create(execution)

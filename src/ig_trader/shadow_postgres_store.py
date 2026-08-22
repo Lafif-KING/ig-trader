@@ -22,9 +22,10 @@ from src.ig_trader.shadow_execution import (
 _READ = """
     SELECT ti.intent_id, ti.strategy_name, ti.epic, ti.lifecycle_state,
            ti.intent_payload, ti.created_at, ti.updated_at,
-           sp.shadow_position_id, sp.direction, sp.entry_price, sp.stop_price,
-           sp.target_price, sp.fencing_token, sp.opened_at, sp.closed_at,
-           sp.status, sp.exit_price, sp.exit_reason, sp.created_at, sp.updated_at
+           sp.shadow_position_id, sp.strategy_id, sp.instrument, sp.direction,
+           sp.entry_price, sp.stop_price, sp.target_price, sp.fencing_token,
+           sp.opened_at, sp.closed_at, sp.status, sp.exit_price, sp.exit_reason,
+           sp.created_at, sp.updated_at
     FROM trading.trade_intents ti
     LEFT JOIN trading.shadow_position_state sp ON sp.intent_id = ti.intent_id
     WHERE ti.intent_id = %s AND ti.execution_mode = 'SHADOW_DEMO'
@@ -68,8 +69,8 @@ class PostgresShadowStore:
                       ON sp.intent_id = ti.intent_id
                     WHERE ti.execution_mode = 'SHADOW_DEMO'
                       AND (
-                        ti.lifecycle_state IN ('SHADOW_INTENT_CREATED', 'OPEN')
-                        OR sp.status = 'OPEN'
+                        ti.lifecycle_state IN ('SHADOW_INTENT_CREATED', 'OPEN', 'FAILED_SAFE')
+                        OR sp.status IN ('OPEN', 'FAILED_SAFE')
                       )
                     """
                 ).fetchone()
@@ -91,6 +92,27 @@ class PostgresShadowStore:
         fingerprint = hashlib.sha256(_canonical_json(payload).encode()).hexdigest()
 
         def write(cursor: Any) -> ShadowIntentRecord:
+            cursor.execute(
+                """
+                SELECT ti.intent_id
+                FROM trading.trade_intents ti
+                LEFT JOIN trading.shadow_position_state sp ON sp.intent_id = ti.intent_id
+                WHERE ti.execution_mode = 'SHADOW_DEMO'
+                  AND (
+                    ti.lifecycle_state IN ('SHADOW_INTENT_CREATED', 'OPEN', 'FAILED_SAFE')
+                    OR sp.status IN ('OPEN', 'FAILED_SAFE')
+                  )
+                FOR UPDATE OF ti
+                """
+            )
+            blocking_intent_ids = {UUID(str(row[0])) for row in cursor.fetchall()}
+            if blocking_intent_ids:
+                if blocking_intent_ids != {record.intent_id}:
+                    raise ShadowExecutionError("an unresolved shadow position blocks a new intent")
+                existing = _read_cursor(cursor, record.intent_id)
+                if existing is None or _identity(existing) != _identity(record):
+                    raise ShadowExecutionError("duplicate shadow intent conflicts")
+                return existing
             cursor.execute(
                 """
                 INSERT INTO trading.trade_intents (
@@ -234,24 +256,37 @@ def _from_row(row: tuple[object, ...]) -> ShadowIntentRecord:
         payload = json.loads(payload)
     if not isinstance(payload, dict):
         raise ShadowExecutionError("shadow intent payload is invalid")
-    lifecycle = ShadowLifecycle(str(row[15] if row[7] is not None else row[3]))
+    has_position = row[7] is not None
+    if has_position and row[3] != row[17]:
+        raise ShadowExecutionError("shadow lifecycle tables disagree")
+    _require_payload_value(payload, "strategy_id", row[1])
+    _require_payload_value(payload, "instrument", row[2])
+    if has_position:
+        _require_payload_value(payload, "shadow_position_id", row[7])
+        _require_payload_value(payload, "strategy_id", row[8])
+        _require_payload_value(payload, "instrument", row[9])
+        _require_payload_value(payload, "direction", row[10])
+        _require_payload_value(payload, "entry_price", row[11])
+        _require_payload_value(payload, "stop_price", row[12])
+        _require_payload_value(payload, "target_price", row[13])
+    lifecycle = ShadowLifecycle(str(row[17] if has_position else row[3]))
     return ShadowIntentRecord(
         shadow_position_id=UUID(str(row[7] or payload["shadow_position_id"])),
         intent_id=UUID(str(row[0])),
         strategy_id=str(row[1]),
         instrument=str(row[2]),
-        direction=str(row[8] or payload["direction"]),
-        entry_price=float(row[9] or payload["entry_price"]),
-        stop_price=float(row[10] or payload["stop_price"]),
-        target_price=float(row[11] or payload["target_price"]),
-        fencing_token=int(row[12] or payload["fencing_token"]),
-        created_at=row[18] or row[5],
-        updated_at=row[19] or row[6],
+        direction=str(row[10] or payload["direction"]),
+        entry_price=float(row[11] or payload["entry_price"]),
+        stop_price=float(row[12] or payload["stop_price"]),
+        target_price=float(row[13] or payload["target_price"]),
+        fencing_token=int(row[14] or payload["fencing_token"]),
+        created_at=row[20] or row[5],
+        updated_at=row[21] or row[6],
         lifecycle=lifecycle,
-        opened_at=row[13],
-        closed_at=row[14],
-        exit_price=float(row[16]) if row[16] is not None else None,
-        exit_reason=str(row[17]) if row[17] is not None else None,
+        opened_at=row[15],
+        closed_at=row[16],
+        exit_price=float(row[18]) if row[18] is not None else None,
+        exit_reason=str(row[19]) if row[19] is not None else None,
     )
 
 
@@ -260,8 +295,10 @@ def _intent_payload(record: ShadowIntentRecord) -> dict[str, object]:
         "direction": record.direction,
         "entry_price": record.entry_price,
         "fencing_token": record.fencing_token,
+        "instrument": record.instrument,
         "shadow_position_id": str(record.shadow_position_id),
         "stop_price": record.stop_price,
+        "strategy_id": record.strategy_id,
         "target_price": record.target_price,
     }
 
@@ -276,8 +313,22 @@ def _identity(record: ShadowIntentRecord) -> tuple[object, ...]:
         record.entry_price,
         record.stop_price,
         record.target_price,
-        record.fencing_token,
     )
+
+
+def _require_payload_value(payload: dict[str, object], field: str, expected: object) -> None:
+    if field not in payload:
+        raise ShadowExecutionError("shadow intent payload is incomplete")
+    actual = payload[field]
+    if field in {"entry_price", "stop_price", "target_price"}:
+        try:
+            matches = float(actual) == float(expected)
+        except (TypeError, ValueError):
+            matches = False
+    else:
+        matches = str(actual) == str(expected)
+    if not matches:
+        raise ShadowExecutionError("shadow intent payload and table columns disagree")
 
 
 def _canonical_json(value: dict[str, object]) -> str:
