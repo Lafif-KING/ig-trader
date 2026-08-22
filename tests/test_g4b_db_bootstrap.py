@@ -1043,6 +1043,32 @@ def _grant_recovery_runtime_privileges(
         connection.execute(f"GRANT EXECUTE ON FUNCTION {signature} TO {role}")
 
 
+def _apply_exact_recovery_fixture_migrations(
+    connection: object,
+    sources: tuple[object, ...],
+    applied_by: str,
+) -> None:
+    """Build an intentional partial state without weakening the canonical planner."""
+
+    for source in sources:
+        definition = source.definition
+        migration_body = source.sql.strip().removeprefix("BEGIN;").removesuffix("COMMIT;")
+        connection.execute(migration_body)
+        connection.execute(
+            """
+            INSERT INTO trading.schema_migrations (
+                version, checksum_sha256, applied_by
+            ) VALUES (%s, %s, %s)
+            """,
+            (definition.version, definition.checksum_sha256, applied_by),
+        )
+        connection.commit()
+        snapshot = inspect_schema(connection)
+        assert snapshot.state(definition) is MigrationState.COMPLETE
+        assert snapshot.ledger[definition.version] == definition.checksum_sha256
+        connection.rollback()
+
+
 def test_real_postgresql_recovery_inspection_is_database_enforced_read_only(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1131,7 +1157,18 @@ def test_real_postgresql_recovery_inspection_is_database_enforced_read_only(
         return evidence
 
     with psycopg.connect(app_dsn) as connection:
-        apply_required_migrations(connection, sources[:2], BOOTSTRAP_PRINCIPAL_NAME)
+        _apply_exact_recovery_fixture_migrations(
+            connection,
+            sources[:2],
+            BOOTSTRAP_PRINCIPAL_NAME,
+        )
+        partial_snapshot = inspect_schema(connection)
+        assert (
+            classify_schema(partial_snapshot)
+            is SchemaClassification.MIGRATIONS_001_AND_002_COMPLETE_003_ABSENT
+        )
+        assert plan_migrations(partial_snapshot) == (MIGRATION_003,)
+        connection.rollback()
         _grant_recovery_runtime_privileges(
             connection,
             include_shadow_position_state=False,
