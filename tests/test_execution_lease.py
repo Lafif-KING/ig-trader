@@ -321,9 +321,7 @@ def test_postgres_fenced_callback_rejection_rolls_back_without_conversion() -> N
         cursor.execute("INSERT domain_change")
         raise rejection
 
-    with pytest.raises(
-        FencedCallbackRejected, match="duplicate shadow intent conflicts"
-    ) as raised:
+    with pytest.raises(FencedCallbackRejected, match="duplicate shadow intent conflicts") as raised:
         store.run_fenced(lease, FencedOperation.TRADE_INTENT, reject)
 
     assert raised.value is rejection
@@ -375,9 +373,7 @@ def test_postgres_unexpected_callback_error_remains_fencing_rejection() -> None:
     def unexpected(_cursor: Cursor) -> None:
         raise RuntimeError("unexpected database callback failure")
 
-    with pytest.raises(
-        FencingRejected, match="execution fencing validation failed closed"
-    ):
+    with pytest.raises(FencingRejected, match="execution fencing validation failed closed"):
         store.run_fenced(lease, FencedOperation.TRADE_INTENT, unexpected)
 
     assert connection.rolled_back is True
