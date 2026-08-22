@@ -1,15 +1,17 @@
 import os
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
 from datetime import UTC, datetime
 from pathlib import Path
 from types import SimpleNamespace
-from uuid import uuid4
+from uuid import NAMESPACE_URL, UUID, uuid4, uuid5
 
 import pytest
 
 from src.ig_trader.db_bootstrap import apply_required_migrations, load_migration_sources
 from src.ig_trader.execution_lease import (
     ExecutionLeaseCoordinator,
+    FencedOperation,
     PostgresExecutionLeaseStore,
 )
 from src.ig_trader.shadow_execution import (
@@ -18,6 +20,7 @@ from src.ig_trader.shadow_execution import (
     MarketQuote,
     ShadowExecutionCore,
     ShadowExecutionError,
+    ShadowIntentRecord,
     ShadowLifecycle,
 )
 from src.ig_trader.shadow_postgres_store import PostgresShadowStore
@@ -46,6 +49,22 @@ def _local_dsn() -> str:
 
 def _signal() -> SimpleNamespace:
     return SimpleNamespace(direction=SimpleNamespace(value="BUY"), strategy_name="S0", epic=EPIC)
+
+
+def _record(intent_id: UUID, fencing_token: int) -> ShadowIntentRecord:
+    return ShadowIntentRecord(
+        shadow_position_id=uuid5(NAMESPACE_URL, f"ig-trader-shadow:{intent_id}"),
+        intent_id=intent_id,
+        strategy_id="S0",
+        instrument=EPIC,
+        direction="BUY",
+        entry_price=0.8500,
+        stop_price=0.8490,
+        target_price=0.8510,
+        fencing_token=fencing_token,
+        created_at=NOW,
+        updated_at=NOW,
+    )
 
 
 def test_postgres_shadow_store_proof_is_wired_into_ci() -> None:
@@ -149,7 +168,9 @@ def test_postgres_shadow_store_lifecycle_restart_and_fencing() -> None:
     assert reconciled.lifecycle is ShadowLifecycle.RECONCILED
 
     stale_lease = coordinator.lease
-    assert stale_lease is not None and coordinator.release()
+    assert stale_lease is not None
+    handoff_retry = store.put(_record(uuid4(), stale_lease.fencing_token))
+    assert coordinator.release()
     successor = ExecutionLeaseCoordinator(
         store=lease_store,
         replica_instance_id="shadow-store-successor",
@@ -208,6 +229,137 @@ def test_postgres_shadow_store_lifecycle_restart_and_fencing() -> None:
             ).fetchone()[0]
             == 1
         )
+
+    successor_lease = successor.lease
+    assert successor_lease is not None
+    successor_core = ShadowExecutionCore(
+        mode=ExecutionMode.SHADOW_DEMO,
+        lease=successor,
+        store=successor_store,
+        risk_gate=lambda *_a, **_k: True,
+        instruments=InstrumentRegistry.frozen_v1(),
+    )
+    retried_after_handoff = successor_store.put(
+        replace(handoff_retry, fencing_token=successor_lease.fencing_token)
+    )
+    assert retried_after_handoff == handoff_retry
+    with pytest.raises(ShadowExecutionError, match="duplicate"):
+        successor_store.put(
+            replace(
+                handoff_retry,
+                fencing_token=successor_lease.fencing_token,
+                target_price=0.8520,
+            )
+        )
+    opened_handoff = successor_core.open_intent(retried_after_handoff, now=NOW)
+    closed_handoff = successor_core.close_on_quote(
+        opened_handoff,
+        MarketQuote(0.8510, 0.8512, NOW),
+        now=NOW,
+    )
+    successor_core.reconcile(closed_handoff, now=NOW)
+
+    concurrent_records = (
+        _record(uuid4(), successor_lease.fencing_token),
+        _record(uuid4(), successor_lease.fencing_token),
+    )
+
+    def attempt(record: ShadowIntentRecord) -> tuple[bool, ShadowIntentRecord | None]:
+        try:
+            return True, successor_store.put(record)
+        except ShadowExecutionError:
+            return False, None
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        outcomes = list(executor.map(attempt, concurrent_records))
+    assert sum(saved for saved, _record_value in outcomes) == 1
+    winner = next(record for saved, record in outcomes if saved)
+    assert winner is not None
+    with connection_factory() as connection:
+        assert (
+            connection.execute(
+                "SELECT count(*) FROM trading.trade_intents WHERE intent_id IN (%s, %s)",
+                tuple(record.intent_id for record in concurrent_records),
+            ).fetchone()[0]
+            == 1
+        )
+        assert (
+            connection.execute(
+                "SELECT count(*) FROM trading.shadow_position_state WHERE intent_id IN (%s, %s)",
+                tuple(record.intent_id for record in concurrent_records),
+            ).fetchone()[0]
+            == 0
+        )
+    opened_winner = successor_core.open_intent(winner, now=NOW)
+    closed_winner = successor_core.close_on_quote(
+        opened_winner,
+        MarketQuote(0.8510, 0.8512, NOW),
+        now=NOW,
+    )
+    successor_core.reconcile(closed_winner, now=NOW)
+
+    retry_id = uuid4()
+    retry = _record(retry_id, successor_lease.fencing_token)
+    assert successor_store.put(retry) == retry
+
+    opened_retry = successor_core.open_intent(retry, now=NOW)
+
+    def mutate(statement: str, parameters: tuple[object, ...]) -> None:
+        successor.run_state_change(
+            FencedOperation.RECONCILIATION,
+            lambda cursor: cursor.execute(statement, parameters),
+        )
+
+    mutate(
+        "UPDATE trading.trade_intents SET lifecycle_state = 'CLOSED' WHERE intent_id = %s",
+        (retry_id,),
+    )
+    with pytest.raises(ShadowExecutionError, match="lifecycle"):
+        successor_store.get(retry_id)
+    mutate(
+        "UPDATE trading.trade_intents SET lifecycle_state = 'OPEN' WHERE intent_id = %s",
+        (retry_id,),
+    )
+    mutate(
+        """
+        UPDATE trading.trade_intents
+        SET intent_payload = jsonb_set(intent_payload, '{entry_price}', '0.1'::jsonb)
+        WHERE intent_id = %s
+        """,
+        (retry_id,),
+    )
+    with pytest.raises(ShadowExecutionError, match="payload"):
+        successor_store.get(retry_id)
+    mutate(
+        """
+        UPDATE trading.trade_intents
+        SET intent_payload = jsonb_set(intent_payload, '{entry_price}', '0.85'::jsonb)
+        WHERE intent_id = %s
+        """,
+        (retry_id,),
+    )
+    closed_retry = successor_core.close_on_quote(
+        opened_retry,
+        MarketQuote(0.8510, 0.8512, NOW),
+        now=NOW,
+    )
+    successor_core.reconcile(closed_retry, now=NOW)
+
+    failed = successor_store.put(_record(uuid4(), successor_lease.fencing_token))
+    opened_failed = successor_core.open_intent(failed, now=NOW)
+    failed = successor_store.transition(
+        opened_failed.intent_id,
+        ShadowLifecycle.OPEN,
+        ShadowLifecycle.FAILED_SAFE,
+        successor_lease.fencing_token,
+        updated_at=NOW,
+    )
+    assert failed.lifecycle is ShadowLifecycle.FAILED_SAFE
+    with pytest.raises(ShadowExecutionError, match="unresolved"):
+        successor_store.put(_record(uuid4(), successor_lease.fencing_token))
+    assert successor_store.active_position_count() == 1
+
+    with connection_factory() as connection:
         columns = {
             row[0]
             for row in connection.execute(
