@@ -11,6 +11,7 @@ from uuid import UUID
 
 from src.ig_trader.execution_lease import (
     ExecutionLeaseCoordinator,
+    FencedCallbackRejected,
     FencedOperation,
 )
 from src.ig_trader.shadow_execution import (
@@ -244,8 +245,16 @@ class PostgresShadowStore:
         return lease.fencing_token
 
     def _run_fenced(self, operation: FencedOperation, callback: Callable[[Any], Any]) -> Any:
+        def reject_domain_error(cursor: Any) -> Any:
+            try:
+                return callback(cursor)
+            except ShadowExecutionError as error:
+                raise FencedCallbackRejected(str(error)) from None
+
         try:
-            return self._lease.run_state_change(operation, callback)
+            return self._lease.run_state_change(operation, reject_domain_error)
+        except FencedCallbackRejected as error:
+            raise ShadowExecutionError(str(error)) from None
         except ShadowExecutionError:
             raise
         except Exception:
