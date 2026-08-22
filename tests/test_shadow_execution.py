@@ -127,8 +127,26 @@ def test_in_memory_active_position_count_is_conservative() -> None:
     assert store.active_position_count() == 1
     opened = execution.open_intent(intent, now=NOW)
     assert store.active_position_count() == 1
-    execution.close_on_quote(opened, quote(bid=0.8510, offer=0.8512), now=NOW)
-    assert store.active_position_count() == 0
+    store.transition(
+        opened.intent_id,
+        ShadowLifecycle.OPEN,
+        ShadowLifecycle.FAILED_SAFE,
+        execution.lease.fencing_token,
+        updated_at=NOW,
+    )
+    assert store.active_position_count() == 1
+
+    completed_execution, completed_store = core()
+    completed_intent = create(completed_execution)
+    completed_open = completed_execution.open_intent(completed_intent, now=NOW)
+    completed_closed = completed_execution.close_on_quote(
+        completed_open,
+        quote(bid=0.8510, offer=0.8512),
+        now=NOW,
+    )
+    assert completed_store.active_position_count() == 0
+    completed_execution.reconcile(completed_closed, now=NOW)
+    assert completed_store.active_position_count() == 0
 
 
 @pytest.mark.parametrize(

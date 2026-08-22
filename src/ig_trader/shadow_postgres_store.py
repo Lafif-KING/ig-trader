@@ -31,6 +31,12 @@ _READ = """
     WHERE ti.intent_id = %s AND ti.execution_mode = 'SHADOW_DEMO'
 """
 
+_ALLOWED_TRANSITIONS = {
+    ShadowLifecycle.SHADOW_INTENT_CREATED: {ShadowLifecycle.OPEN},
+    ShadowLifecycle.OPEN: {ShadowLifecycle.CLOSED, ShadowLifecycle.FAILED_SAFE},
+    ShadowLifecycle.CLOSED: {ShadowLifecycle.RECONCILED},
+}
+
 
 class PostgresShadowStore:
     """Atomic ShadowStore implementation guarded by the lease fence transaction."""
@@ -158,6 +164,8 @@ class PostgresShadowStore:
         exit_price: float | None = None,
         exit_reason: str | None = None,
     ) -> ShadowIntentRecord:
+        if to_state not in _ALLOWED_TRANSITIONS.get(from_state, set()):
+            raise ShadowExecutionError("shadow lifecycle transition is invalid")
         if fencing_token != self._current_fencing_token():
             raise ShadowExecutionError("stale shadow fencing token")
 
@@ -256,8 +264,12 @@ def _from_row(row: tuple[object, ...]) -> ShadowIntentRecord:
         payload = json.loads(payload)
     if not isinstance(payload, dict):
         raise ShadowExecutionError("shadow intent payload is invalid")
+    intent_lifecycle = _lifecycle(row[3])
     has_position = row[7] is not None
-    if has_position and row[3] != row[17]:
+    if not has_position and intent_lifecycle is not ShadowLifecycle.SHADOW_INTENT_CREATED:
+        raise ShadowExecutionError("shadow lifecycle requires durable position state")
+    position_lifecycle = _lifecycle(row[17]) if has_position else None
+    if has_position and intent_lifecycle is not position_lifecycle:
         raise ShadowExecutionError("shadow lifecycle tables disagree")
     _require_payload_value(payload, "strategy_id", row[1])
     _require_payload_value(payload, "instrument", row[2])
@@ -269,7 +281,7 @@ def _from_row(row: tuple[object, ...]) -> ShadowIntentRecord:
         _require_payload_value(payload, "entry_price", row[11])
         _require_payload_value(payload, "stop_price", row[12])
         _require_payload_value(payload, "target_price", row[13])
-    lifecycle = ShadowLifecycle(str(row[17] if has_position else row[3]))
+    lifecycle = position_lifecycle or intent_lifecycle
     return ShadowIntentRecord(
         shadow_position_id=UUID(str(row[7] or payload["shadow_position_id"])),
         intent_id=UUID(str(row[0])),
@@ -314,6 +326,13 @@ def _identity(record: ShadowIntentRecord) -> tuple[object, ...]:
         record.stop_price,
         record.target_price,
     )
+
+
+def _lifecycle(value: object) -> ShadowLifecycle:
+    try:
+        return ShadowLifecycle(str(value))
+    except ValueError:
+        raise ShadowExecutionError("shadow lifecycle state is invalid") from None
 
 
 def _require_payload_value(payload: dict[str, object], field: str, expected: object) -> None:
