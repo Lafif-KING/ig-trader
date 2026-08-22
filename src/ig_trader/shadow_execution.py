@@ -8,7 +8,7 @@ from datetime import UTC, datetime, timedelta
 from enum import StrEnum
 from math import isfinite
 from typing import Any, Protocol
-from uuid import UUID, uuid4
+from uuid import NAMESPACE_URL, UUID, uuid4, uuid5
 
 
 class ExecutionMode(StrEnum):
@@ -162,7 +162,7 @@ class InMemoryShadowStore:
     def put(self, record: ShadowIntentRecord) -> ShadowIntentRecord:
         self._require_fence(record.fencing_token)
         existing = self.records.get(record.intent_id)
-        if existing is not None and existing != record:
+        if existing is not None and _intent_identity(existing) != _intent_identity(record):
             raise ShadowExecutionError("duplicate shadow intent conflicts")
         self.records[record.intent_id] = existing or record
         return self.records[record.intent_id]
@@ -275,9 +275,10 @@ class ShadowExecutionCore:
         _validate_geometry(direction, entry_price, stop_price, target_price)
         now_utc = _required_utc(now)
         token = self._fencing_token()
+        resolved_intent_id = intent_id or uuid4()
         record = ShadowIntentRecord(
-            shadow_position_id=uuid4(),
-            intent_id=intent_id or uuid4(),
+            shadow_position_id=uuid5(NAMESPACE_URL, f"ig-trader-shadow:{resolved_intent_id}"),
+            intent_id=resolved_intent_id,
             strategy_id=str(signal.strategy_name),
             instrument=metadata.epic,
             direction=direction,
@@ -408,7 +409,6 @@ def _intent_identity(record: ShadowIntentRecord) -> tuple[object, ...]:
         record.entry_price,
         record.stop_price,
         record.target_price,
-        record.fencing_token,
     )
 
 
