@@ -53,6 +53,13 @@ update the displayed main SHA, pull requests, and workflow metadata, but cannot
 modify a governance gate. `DEMO_EXECUTION` and `LIVE_EXECUTION` remain disabled
 until a reviewed change explicitly says otherwise.
 
+## Strategy Lab page
+
+The **Strategy Lab** page reads only local generated files in
+`artifacts/strategy_lab/`. It filters research evidence but has no execution or
+promotion control. If artifacts have not been generated, it states that data is
+unavailable rather than inventing results.
+
 ## Progress numbers
 
 The dashboard intentionally does not calculate one “percent to Live” number.
