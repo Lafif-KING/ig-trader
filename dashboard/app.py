@@ -13,7 +13,18 @@ import streamlit as st
 
 from dashboard.components import configure_page
 from dashboard.models import GitHubStatus
-from dashboard.pages import demo, live, overview, roadmap, shadow, strategy_lab, system, tests_ci
+from dashboard.pages import (
+    demo,
+    demo_operator,
+    live,
+    overview,
+    roadmap,
+    shadow,
+    strategy_lab,
+    system,
+    tests_ci,
+)
+from dashboard.sources.demo_operator import load_demo_operator_snapshot
 from dashboard.sources.github import (
     ANONYMOUS_CACHE_TTL_SECONDS,
     TOKEN_CACHE_TTL_SECONDS,
@@ -32,6 +43,7 @@ PAGES = (
     "Tests & GitHub CI",
     "Shadow Results",
     "Demo Results",
+    "Demo Operator",
     "Live Results",
     "System & Safety",
 )
@@ -91,6 +103,8 @@ def render_control_center(page: str, github: GitHubStatus | None = None) -> None
         shadow.render(load_shadow_data(), historical_replay_summary())
     elif page == "Demo Results":
         demo.render()
+    elif page == "Demo Operator":
+        demo_operator.render(load_demo_operator_snapshot())
     elif page == "Live Results":
         live.render()
     else:
