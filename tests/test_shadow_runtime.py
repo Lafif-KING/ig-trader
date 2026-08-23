@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import os
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime, timedelta, timezone
 from pathlib import Path
 from uuid import uuid4
 
@@ -17,6 +17,7 @@ from src.ig_trader.shadow_execution import (
 )
 from src.ig_trader.shadow_postgres_store import PostgresShadowStore
 from src.ig_trader.shadow_runtime import (
+    FinalizedCandleBuffer,
     FinalizedMinuteCandle,
     InMemoryShadowEvidenceStore,
     ShadowAccountState,
@@ -27,6 +28,8 @@ from src.ig_trader.shadow_runtime import (
 
 NOW = datetime(2026, 8, 22, 12, tzinfo=UTC)
 EPIC = "CS.D.EURGBP.MINI.IP"
+EURUSD_EPIC = "CS.D.EURUSD.MINI.IP"
+GBPUSD_EPIC = "CS.D.GBPUSD.MINI.IP"
 ROOT = Path(__file__).resolve().parents[1]
 
 
@@ -36,24 +39,50 @@ class Lease:
 
 
 def quote(
-    *, timestamp: datetime = NOW, bid: float = 0.8500, offer: float = 0.8501
+    *,
+    epic: str = EPIC,
+    timestamp: datetime = NOW,
+    bid: float = 0.8500,
+    offer: float = 0.8501,
+    pip_value_account_currency: float = 1.0,
+    minimum_size: float = 0.01,
+    minimum_stop_pips: float = 1.0,
 ) -> ShadowMarketQuote:
-    return ShadowMarketQuote(EPIC, bid, offer, timestamp, 1.0, 0.01, 1.0)
+    return ShadowMarketQuote(
+        epic,
+        bid,
+        offer,
+        timestamp,
+        pip_value_account_currency,
+        minimum_size,
+        minimum_stop_pips,
+    )
 
 
-def account(*, timestamp: datetime = NOW) -> ShadowAccountState:
-    return ShadowAccountState("shadow", "EUR", 10_000.0, 10_000.0, timestamp)
+def account(
+    *,
+    timestamp: datetime = NOW,
+    balance: float = 10_000.0,
+    starting_balance: float = 10_000.0,
+    state_known: bool = True,
+) -> ShadowAccountState:
+    return ShadowAccountState("shadow", "EUR", balance, starting_balance, timestamp, state_known)
 
 
-def candle(index: int) -> FinalizedMinuteCandle:
-    timestamp = NOW - timedelta(minutes=61 - index)
-    return FinalizedMinuteCandle(EPIC, timestamp, 0.8500, 0.8505, 0.8495, 0.8500, 1.0)
+def candle(
+    index: int,
+    *,
+    epic: str = EPIC,
+    timestamp: datetime | None = None,
+) -> FinalizedMinuteCandle:
+    resolved_timestamp = timestamp or NOW - timedelta(minutes=61 - index)
+    return FinalizedMinuteCandle(epic, resolved_timestamp, 0.8500, 0.8505, 0.8495, 0.8500, 1.0)
 
 
 def runtime(store: object | None = None) -> ShadowRuntime:
     return ShadowRuntime(
         lease=Lease(),
-        store=store or InMemoryShadowStore(7),  # type: ignore[arg-type]
+        store=store or InMemoryShadowStore(7),
         evidence=InMemoryShadowEvidenceStore(),
     )
 
@@ -74,15 +103,22 @@ def force_s0_signal(monkeypatch: pytest.MonkeyPatch, value: ShadowRuntime) -> No
     monkeypatch.setattr(value.strategy, "generate_signal", generate)
 
 
-def warm(runtime_value: ShadowRuntime, monkeypatch: pytest.MonkeyPatch, cycle_id: str):
+def warm(
+    runtime_value: ShadowRuntime,
+    monkeypatch: pytest.MonkeyPatch,
+    cycle_id: str,
+    *,
+    epic: str = EPIC,
+    account_value: object | None = None,
+):
     force_s0_signal(monkeypatch, runtime_value)
     result = None
     for index in range(60):
         result = runtime_value.evaluate_cycle(
             cycle_id=cycle_id if index == 59 else f"warmup-{cycle_id}-{index}",
-            quote=quote(),
-            candle=candle(index),
-            account=account(),
+            quote=quote(epic=epic),
+            candle=candle(index, epic=epic),
+            account=account() if account_value is None else account_value,  # type: ignore[arg-type]
             now=NOW,
         )
     assert result is not None
@@ -100,6 +136,8 @@ def test_runtime_is_permanently_broker_unauthorized() -> None:
     assert value.broker_order_call_count == 0
     assert "ExecutionEngine" not in source
     assert "working_order" not in source
+    assert "PostgresShadowStore" not in source
+    assert "ShadowStore" in source
 
 
 def test_quote_validation_rejects_stale_future_and_crossed_inputs() -> None:
@@ -117,6 +155,36 @@ def test_quote_validation_rejects_stale_future_and_crossed_inputs() -> None:
                 account=account(),
                 now=NOW,
             )
+
+
+def test_finalized_candle_buffer_is_bounded_utc_gap_preserving_and_idempotent() -> None:
+    buffer = FinalizedCandleBuffer(2)
+    first_timestamp = (NOW - timedelta(minutes=61)).astimezone(timezone(timedelta(hours=2)))
+    first = candle(
+        0,
+        timestamp=first_timestamp,
+    )
+    gap_after_first = candle(2)
+
+    assert buffer.append(first, now=NOW)[0].timestamp.tzinfo is UTC
+    accepted = buffer.append(gap_after_first, now=NOW)
+    assert [item.timestamp for item in accepted] == [
+        NOW - timedelta(minutes=61),
+        NOW - timedelta(minutes=59),
+    ]
+    assert NOW - timedelta(minutes=60) not in [item.timestamp for item in accepted]
+
+    before_duplicate = buffer.snapshot(EPIC)
+    with pytest.raises(ShadowRuntimeError, match="already emitted"):
+        buffer.append(candle(2), now=NOW)
+    assert buffer.snapshot(EPIC) == before_duplicate
+
+    bounded = buffer.append(candle(3), now=NOW)
+    assert len(bounded) == 2
+    assert [item.timestamp for item in bounded] == [
+        NOW - timedelta(minutes=59),
+        NOW - timedelta(minutes=58),
+    ]
 
 
 def test_frozen_policy_derives_levels_and_restart_is_idempotent(
@@ -139,26 +207,105 @@ def test_conflicting_global_cycle_fails_closed(monkeypatch: pytest.MonkeyPatch) 
     store = InMemoryShadowStore(7)
     created = warm(runtime(store), monkeypatch, "global-cycle")
     assert created.intent is not None
-    value = runtime(store)
-    force_s0_signal(monkeypatch, value)
+    duplicate = warm(runtime(store), monkeypatch, "global-cycle")
+    assert duplicate.decision_code == "DUPLICATE_CYCLE"
+    assert duplicate.intent == created.intent
 
-    for index in range(59):
-        value.evaluate_cycle(
-            cycle_id=f"other-{index}",
-            quote=quote(),
-            candle=candle(index),
-            account=account(),
-            now=NOW,
-        )
-    with pytest.raises(ShadowExecutionError, match="duplicate"):
-        value.evaluate_cycle(
-            cycle_id="global-cycle",
-            quote=quote(offer=0.85011),
-            candle=candle(59),
-            account=account(),
-            now=NOW,
-        )
+    for conflicting_epic in (EURUSD_EPIC, GBPUSD_EPIC):
+        with pytest.raises(ShadowExecutionError, match="duplicate"):
+            warm(runtime(store), monkeypatch, "global-cycle", epic=conflicting_epic)
     assert store.get(created.intent.intent_id) == created.intent
+    assert len(store.records) == 1
+
+
+def test_portfolio_risk_daily_loss_veto_cannot_be_overridden(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    store = InMemoryShadowStore(7)
+    value = runtime(store)
+    monkeypatch.setattr(value._execution, "risk_gate", lambda *_args, **_kwargs: True)
+
+    result = warm(
+        value,
+        monkeypatch,
+        "daily-loss-veto",
+        account_value=account(balance=9_400.0),
+    )
+
+    assert result.decision_code == "DAILY_LOSS_LIMIT"
+    assert result.intent is None
+    assert store.records == {}
+
+
+def test_portfolio_risk_position_limit_vetoes_without_caller_count(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    store = InMemoryShadowStore(7)
+    active = warm(runtime(store), monkeypatch, "active-position")
+    assert active.intent is not None
+
+    result = warm(runtime(store), monkeypatch, "position-limit")
+
+    assert result.decision_code == "TOTAL_POSITION_LIMIT"
+    assert result.intent is None
+    assert len(store.records) == 1
+
+
+def test_portfolio_risk_missing_account_state_vetoes(monkeypatch: pytest.MonkeyPatch) -> None:
+    store = InMemoryShadowStore(7)
+
+    result = warm(runtime(store), monkeypatch, "missing-account", account_value=object())
+
+    assert result.decision_code == "ACCOUNT_STATE_UNKNOWN"
+    assert result.intent is None
+    assert store.records == {}
+
+
+def test_missing_instrument_metadata_fails_closed_without_intent() -> None:
+    store = InMemoryShadowStore(7)
+    value = runtime(store)
+    unsupported = "UNSUPPORTED"
+
+    with pytest.raises(ShadowExecutionError, match="instrument"):
+        value.evaluate_cycle(
+            cycle_id="missing-metadata",
+            quote=quote(epic=unsupported),
+            candle=candle(0, epic=unsupported),
+            account=account(),
+            now=NOW,
+        )
+    assert store.records == {}
+
+
+def test_missing_quote_metadata_fails_closed_without_intent() -> None:
+    store = InMemoryShadowStore(7)
+    value = runtime(store)
+    missing_size = ShadowMarketQuote(EPIC, 0.8500, 0.8501, NOW, 1.0, None, 1.0)
+
+    with pytest.raises(ShadowRuntimeError, match="market quote"):
+        value.evaluate_cycle(
+            cycle_id="missing-quote-metadata",
+            quote=missing_size,
+            candle=candle(0),
+            account=account(),
+            now=NOW,
+        )
+    assert store.records == {}
+
+
+def test_invalid_pip_metadata_fails_closed_without_intent() -> None:
+    store = InMemoryShadowStore(7)
+    value = runtime(store)
+
+    with pytest.raises(ShadowRuntimeError, match="market quote"):
+        value.evaluate_cycle(
+            cycle_id="invalid-pip-metadata",
+            quote=quote(pip_value_account_currency=float("nan")),
+            candle=candle(0),
+            account=account(),
+            now=NOW,
+        )
+    assert store.records == {}
 
 
 def test_runtime_advances_created_open_closed_and_reconciled(

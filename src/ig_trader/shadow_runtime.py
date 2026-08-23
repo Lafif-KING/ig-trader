@@ -5,8 +5,8 @@ from __future__ import annotations
 import hashlib
 import json
 from collections import deque
-from collections.abc import Mapping
-from dataclasses import dataclass
+from collections.abc import Mapping, Sequence
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
 from math import isfinite
 from typing import Any, Protocol
@@ -24,8 +24,8 @@ from src.ig_trader.shadow_execution import (
     ShadowExecutionError,
     ShadowIntentRecord,
     ShadowLifecycle,
+    ShadowStore,
 )
-from src.ig_trader.shadow_postgres_store import PostgresShadowStore
 from src.ig_trader.strategies.scalper import ScalperStrategy
 
 
@@ -90,6 +90,32 @@ class FinalizedMinuteCandle:
             raise ShadowRuntimeError("finalized one-minute candle is invalid")
 
 
+class FinalizedCandleBuffer:
+    """Bounded UTC finalized-candle history with no gap filling or replay."""
+
+    def __init__(self, capacity: int) -> None:
+        if isinstance(capacity, bool) or not isinstance(capacity, int) or capacity <= 0:
+            raise ShadowRuntimeError("finalized candle capacity is invalid")
+        self.capacity = capacity
+        self._candles: dict[str, deque[FinalizedMinuteCandle]] = {}
+
+    def append(
+        self, candle: FinalizedMinuteCandle, *, now: datetime
+    ) -> tuple[FinalizedMinuteCandle, ...]:
+        candle.validate(now=now)
+        finalized = replace(candle, timestamp=_utc(candle.timestamp))
+        candles = self._candles.setdefault(finalized.epic, deque(maxlen=self.capacity))
+        if candles and finalized.timestamp <= candles[-1].timestamp:
+            if finalized.timestamp == candles[-1].timestamp:
+                raise ShadowRuntimeError("finalized candle was already emitted")
+            raise ShadowRuntimeError("finalized candle sequence is not strictly increasing")
+        candles.append(finalized)
+        return tuple(candles)
+
+    def snapshot(self, epic: str) -> tuple[FinalizedMinuteCandle, ...]:
+        return tuple(self._candles.get(epic, ()))
+
+
 @dataclass(frozen=True)
 class ShadowAccountState:
     account_id: str
@@ -148,7 +174,7 @@ class ShadowRuntime:
         self,
         *,
         lease: Any,
-        store: PostgresShadowStore,
+        store: ShadowStore,
         evidence: ShadowEvidenceStore,
     ) -> None:
         self.config = FrozenV1Config()
@@ -163,15 +189,16 @@ class ShadowRuntime:
             minimum_candles=self.config.warmup_candles,
         )
         self.portfolio_risk = PortfolioRisk(self.config)
-        self.execution = ShadowExecutionCore(
+        self._portfolio_risk_permitted = False
+        self._execution = ShadowExecutionCore(
             mode=ExecutionMode.SHADOW_DEMO,
             lease=lease,
             store=store,
-            risk_gate=lambda *_args, **_kwargs: True,
+            risk_gate=self._consume_portfolio_risk_permit,
             instruments=self.instruments,
             max_quote_age=self.max_quote_age,
         )
-        self._candles: dict[str, deque[FinalizedMinuteCandle]] = {}
+        self._candles = FinalizedCandleBuffer(self.config.warmup_candles)
 
     @property
     def authorized(self) -> bool:
@@ -198,11 +225,7 @@ class ShadowRuntime:
             raise ShadowRuntimeError("shadow cycle input is invalid")
         metadata = self.instruments.require(quote.epic)
         quote.validate(now=now, pip_size=metadata.pip_size, max_age=self.max_quote_age)
-        candle.validate(now=now)
-        candles = self._candles.setdefault(quote.epic, deque(maxlen=self.config.warmup_candles))
-        if candles and candle.timestamp <= candles[-1].timestamp:
-            raise ShadowRuntimeError("shadow candle sequence is not strictly increasing")
-        candles.append(candle)
+        candles = self._candles.append(candle, now=now)
         if len(candles) < self.config.warmup_candles:
             return self._record(cycle_id, "WARMUP_INCOMPLETE", None, now, {"candles": len(candles)})
 
@@ -237,24 +260,17 @@ class ShadowRuntime:
         )
         existing = self.store.get(intent_id)
         if existing is not None:
-            record = self.execution.create_intent(
-                produced,
-                MarketQuote(quote.bid, quote.offer, quote.timestamp),
-                intent_id=intent_id,
-                stop_price=stop,
-                target_price=target,
-                open_positions_for_strategy=0,
-                daily_loss_pct=0.0,
-                now=now,
+            self._require_matching_intent(
+                existing, produced, quote.epic, direction, entry, stop, target
             )
             evidence = self._record(
                 cycle_id,
                 "PORTFOLIO_RISK_ALLOWED",
-                record.intent_id,
+                existing.intent_id,
                 now,
                 {"direction": direction, "entry": entry, "stop": stop, "target": target},
             ).evidence
-            return ShadowRuntimeResult(cycle_id, "DUPLICATE_CYCLE", record, evidence)
+            return ShadowRuntimeResult(cycle_id, "DUPLICATE_CYCLE", existing, evidence)
 
         active_positions = self.store.active_position_count()
         if not isinstance(active_positions, int) or active_positions < 0:
@@ -288,14 +304,10 @@ class ShadowRuntime:
             (),
             _fingerprint({"cycle": cycle_id, "epic": quote.epic, "candle": candle.timestamp}),
         )
-        normalized_account = AccountSnapshot(
-            account.account_id,
-            account.currency,
-            account.balance,
-            account.starting_balance,
-            tuple(_CountedPosition(quote.epic) for _ in range(active_positions)),
-            account.captured_at,
-            account.state_known,
+        normalized_account = _account_snapshot(
+            account,
+            epic=quote.epic,
+            active_positions=active_positions,
         )
         decision = self.portfolio_risk.evaluate(
             candidate,
@@ -305,7 +317,7 @@ class ShadowRuntime:
         )
         if not decision.allowed:
             return self._record(cycle_id, decision.code, None, now, {"signal": direction})
-        if decision.target_pips is None:
+        if not isinstance(normalized_account, AccountSnapshot) or decision.target_pips is None:
             raise ShadowRuntimeError("approved shadow risk decision is incomplete")
         pre_evidence = self._record(
             cycle_id,
@@ -314,16 +326,20 @@ class ShadowRuntime:
             now,
             {"direction": direction, "entry": entry, "stop": stop, "target": target},
         ).evidence
-        record = self.execution.create_intent(
-            produced,
-            MarketQuote(quote.bid, quote.offer, quote.timestamp),
-            intent_id=intent_id,
-            stop_price=stop,
-            target_price=target,
-            open_positions_for_strategy=active_positions,
-            daily_loss_pct=normalized_account.daily_loss_pct or 0.0,
-            now=now,
-        )
+        self._portfolio_risk_permitted = True
+        try:
+            record = self._execution.create_intent(
+                produced,
+                MarketQuote(quote.bid, quote.offer, quote.timestamp),
+                intent_id=intent_id,
+                stop_price=stop,
+                target_price=target,
+                open_positions_for_strategy=active_positions,
+                daily_loss_pct=normalized_account.daily_loss_pct or 0.0,
+                now=now,
+            )
+        finally:
+            self._portfolio_risk_permitted = False
         evidence = ShadowCycleEvidence(
             pre_evidence.cycle_id,
             pre_evidence.fingerprint,
@@ -347,12 +363,46 @@ class ShadowRuntime:
             raise ShadowRuntimeError("shadow position quote does not match its instrument")
         market_quote = MarketQuote(quote.bid, quote.offer, quote.timestamp)
         if record.lifecycle is ShadowLifecycle.SHADOW_INTENT_CREATED:
-            return self.execution.open_intent(record, now=now)
+            return self._execution.open_intent(record, now=now)
         if record.lifecycle is ShadowLifecycle.OPEN:
-            return self.execution.close_on_quote(record, market_quote, now=now)
+            return self._execution.close_on_quote(record, market_quote, now=now)
         if record.lifecycle is ShadowLifecycle.CLOSED:
-            return self.execution.reconcile(record, now=now)
+            return self._execution.reconcile(record, now=now)
         return record
+
+    def _consume_portfolio_risk_permit(self, *_args: object, **_kwargs: object) -> bool:
+        """Permit exactly the synchronous core call following a risk approval."""
+
+        return self._portfolio_risk_permitted
+
+    @staticmethod
+    def _require_matching_intent(
+        existing: ShadowIntentRecord,
+        signal: object,
+        epic: str,
+        direction: str,
+        entry: float,
+        stop: float,
+        target: float,
+    ) -> None:
+        expected = (
+            str(getattr(signal, "strategy_name", "")),
+            epic,
+            direction,
+            entry,
+            stop,
+            target,
+        )
+        observed = (
+            existing.strategy_id,
+            existing.instrument,
+            existing.direction,
+            existing.entry_price,
+            existing.stop_price,
+            existing.target_price,
+        )
+        if observed != expected:
+            raise ShadowExecutionError("duplicate shadow intent conflicts")
 
     def _record(
         self,
@@ -374,7 +424,7 @@ class ShadowRuntime:
         return ShadowRuntimeResult(cycle_id, code, None, evidence)
 
 
-def _frame(candles: deque[FinalizedMinuteCandle]) -> pd.DataFrame:
+def _frame(candles: Sequence[FinalizedMinuteCandle]) -> pd.DataFrame:
     return pd.DataFrame(
         {
             "open": [item.open for item in candles],
@@ -403,4 +453,39 @@ def _positive(value: object) -> bool:
         and not isinstance(value, bool)
         and isfinite(value)
         and value > 0
+    )
+
+
+def _account_snapshot(
+    account: object,
+    *,
+    epic: str,
+    active_positions: int,
+) -> AccountSnapshot | None:
+    if not isinstance(account, ShadowAccountState):
+        return None
+    if (
+        not isinstance(account.account_id, str)
+        or not isinstance(account.currency, str)
+        or not account.account_id.strip()
+        or len(account.currency) != 3
+        or not account.currency.isalpha()
+        or account.currency != account.currency.upper()
+        or not _positive(account.balance)
+        or not _positive(account.starting_balance)
+        or not isinstance(account.state_known, bool)
+    ):
+        return None
+    try:
+        captured_at = _utc(account.captured_at)
+    except ShadowRuntimeError:
+        return None
+    return AccountSnapshot(
+        account.account_id,
+        account.currency,
+        account.balance,
+        account.starting_balance,
+        tuple(_CountedPosition(epic) for _ in range(active_positions)),
+        captured_at,
+        account.state_known,
     )

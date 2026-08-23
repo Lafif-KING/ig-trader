@@ -59,7 +59,7 @@ class InstrumentRegistry:
                 epic: InstrumentMetadata(epic, 0.0001)
                 for epic in (
                     "CS.D.EURGBP.MINI.IP",
-                    "CS.D.EURUSD.CEFM.IP",
+                    "CS.D.EURUSD.MINI.IP",
                     "CS.D.GBPUSD.MINI.IP",
                 )
             }
