@@ -52,6 +52,9 @@ def test_foundation_progress_is_83_percent_and_authority_is_separate() -> None:
         for gate in gates
         if gate.gate_id in {"DEMO_EXECUTION", "LIVE_EXECUTION"}
     )
+    dq01_gate = next(gate for gate in gates if gate.gate_id == "DQ01_DEMO_QUALIFICATION_CORE")
+    assert dq01_gate.governance_status == dq01_gate.technical_status == "IN_PROGRESS"
+    assert dq01_gate.weight == 0
 
 
 def test_project_gates_keep_reviewed_links_and_current_verification_dates() -> None:

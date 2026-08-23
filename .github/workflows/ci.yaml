@@ -66,6 +66,13 @@ jobs:
             tests/test_dashboard_security.py \
             tests/test_dashboard_app.py
 
+      - name: DQ-01 Demo qualification engineering tests
+        run: |
+          poetry run pytest -q \
+            --junitxml=artifacts/ci/tests-dq01-demo-qualification.xml \
+            tests/test_demo_execution.py \
+            tests/test_demo_qualification.py
+
       - name: Collect and run complete clean suite
         run: |
           poetry run pytest --collect-only -q | tee artifacts/ci/test-collection.txt
