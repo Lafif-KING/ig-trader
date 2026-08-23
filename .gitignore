@@ -27,3 +27,4 @@ trading.db
 *.sqlite3
 *.sqlite-wal
 *.sqlite-shm
+artifacts/strategy_lab/

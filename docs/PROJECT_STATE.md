@@ -39,3 +39,16 @@ orders, and positions are all 0.
 1. Prepare `SHADOW_DEMO` with S0 only; do not begin it without a separate gate.
 2. Engineering Shadow qualification.
 3. Build the Strategy Lab foundation, then S1 and S2 challengers.
+
+## Strategy Lab (SL-01)
+
+- A local broker-neutral Strategy Lab has been added as a separate research
+  package. It has no broker, Demo, Live, cloud, or database execution path.
+- The initial 26-instrument universe is research-only. IG EPICs and broker
+  metadata remain UNKNOWN until a separate read-only discovery process verifies
+  them.
+- Local datasets retain UTC timestamps, source/source-quality, gaps, synthetic
+  flags, and source/dataset fingerprints. Missing friction blocks promotion as
+  `COST_MODEL_INCOMPLETE`.
+- The Control Center can show local generated Strategy Lab artifacts. It has no
+  promotion button; Demo and Live authority remain disabled.
