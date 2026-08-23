@@ -2,7 +2,7 @@ name: Cloud foundation CI
 
 on:
   push:
-    branches: ["main", "codex/g4a-01-cloud-foundation", "codex/g4b-02a1-operational-alerts", "codex/g4b-02b1-execution-lease", "codex/g4b-02b2a-db-bootstrap"]
+    branches: ["main", "codex/g4a-01-cloud-foundation", "codex/g4b-02a1-operational-alerts", "codex/g4b-02b1-execution-lease", "codex/g4b-02b2a-db-bootstrap", "codex/pi1-project-dashboard-mvp"]
   pull_request:
     branches: ["main"]
   workflow_dispatch:
@@ -53,6 +53,18 @@ jobs:
           poetry check --lock
           poetry sync --no-interaction --no-ansi
           poetry run pip check
+
+      - name: Validate reviewed dashboard gates
+        run: poetry run python tools/validate_project_gates.py
+
+      - name: Dashboard unit and Streamlit tests
+        run: |
+          poetry run pytest -q \
+            tests/test_dashboard_models.py \
+            tests/test_dashboard_project_source.py \
+            tests/test_dashboard_github_source.py \
+            tests/test_dashboard_security.py \
+            tests/test_dashboard_app.py
 
       - name: Collect and run complete clean suite
         run: |
@@ -245,6 +257,37 @@ jobs:
             --build-arg "APP_VERSION=0.1.0" \
             --tag "${IMAGE}" \
             .
+
+      - name: Build read-only dashboard image
+        env:
+          IMAGE: ig-trader-control-center:${{ github.sha }}
+        run: |
+          docker build \
+            --file Dockerfile.dashboard \
+            --build-arg "APP_COMMIT_SHA=${GITHUB_SHA}" \
+            --build-arg "APP_SOURCE_URL=${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}" \
+            --build-arg "APP_VERSION=0.1.0" \
+            --tag "${IMAGE}" \
+            .
+
+      - name: Verify dashboard is non-root and healthy
+        env:
+          IMAGE: ig-trader-control-center:${{ github.sha }}
+        run: |
+          test "$(docker image inspect --format '{{.Config.User}}' "${IMAGE}")" = "10002:10002"
+          container_id="$(docker run --detach --rm --read-only --tmpfs /tmp --cap-drop ALL \
+            --security-opt no-new-privileges --publish 127.0.0.1:8501:8501 \
+            --env DASHBOARD_GITHUB_OFFLINE=1 "${IMAGE}")"
+          cleanup() { docker stop "${container_id}" >/dev/null 2>&1 || true; }
+          trap cleanup EXIT
+          for attempt in $(seq 1 20); do
+            if python -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8501/_stcore/health', timeout=2).read()"; then
+              exit 0
+            fi
+            sleep 1
+          done
+          docker logs "${container_id}"
+          exit 1
 
       - name: Safe container acceptance test
         env:
