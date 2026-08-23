@@ -1294,6 +1294,21 @@ def test_postgres_shadow_runtime_lifecycle_and_restart(monkeypatch: pytest.Monke
     opened = restarted.advance(created.intent_id, quote(), now=NOW)
     assert opened.lifecycle is ShadowLifecycle.OPEN
     assert evidence.by_intent(created.intent_id).lifecycle is ShadowLifecycle.OPEN
+    duplicate_after_open = warm(
+        ShadowRuntime(lease=successor, store=successor_store, evidence=evidence),
+        monkeypatch,
+    )
+    assert duplicate_after_open.decision_code == "DUPLICATE_CYCLE"
+    assert duplicate_after_open.intent == opened
+    assert duplicate_after_open.evidence.lifecycle is ShadowLifecycle.OPEN
+    with connection_factory() as connection:
+        assert (
+            connection.execute(
+                "SELECT count(*) FROM trading.trade_intents WHERE intent_id = %s",
+                (created.intent_id,),
+            ).fetchone()[0]
+            == 1
+        )
     limited = warm(
         ShadowRuntime(lease=successor, store=successor_store, evidence=evidence),
         monkeypatch,

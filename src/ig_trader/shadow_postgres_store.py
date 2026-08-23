@@ -6,6 +6,7 @@ import hashlib
 import json
 from collections.abc import Callable
 from datetime import datetime
+from decimal import Decimal, InvalidOperation
 from typing import Any
 from uuid import UUID
 
@@ -37,6 +38,8 @@ _ALLOWED_TRANSITIONS = {
     ShadowLifecycle.OPEN: {ShadowLifecycle.CLOSED, ShadowLifecycle.FAILED_SAFE},
     ShadowLifecycle.CLOSED: {ShadowLifecycle.RECONCILED},
 }
+
+_PRICE_PROJECTION_TOLERANCE = Decimal("1e-12")
 
 
 class PostgresShadowStore:
@@ -273,6 +276,9 @@ def _from_row(row: tuple[object, ...]) -> ShadowIntentRecord:
         payload = json.loads(payload)
     if not isinstance(payload, dict):
         raise ShadowExecutionError("shadow intent payload is invalid")
+    payload_entry_price = _payload_price(payload, "entry_price")
+    payload_stop_price = _payload_price(payload, "stop_price")
+    payload_target_price = _payload_price(payload, "target_price")
     intent_lifecycle = _lifecycle(row[3])
     has_position = row[7] is not None
     if not has_position and intent_lifecycle is not ShadowLifecycle.SHADOW_INTENT_CREATED:
@@ -297,10 +303,14 @@ def _from_row(row: tuple[object, ...]) -> ShadowIntentRecord:
         strategy_id=str(row[1]),
         instrument=str(row[2]),
         direction=str(row[10] or payload["direction"]),
-        entry_price=float(row[11] or payload["entry_price"]),
-        stop_price=float(row[12] or payload["stop_price"]),
-        target_price=float(row[13] or payload["target_price"]),
-        fencing_token=int(row[14] or payload["fencing_token"]),
+        # Immutable intent economics remain authoritative after the typed
+        # projection has been strictly checked for representation-equivalence.
+        entry_price=payload_entry_price,
+        stop_price=payload_stop_price,
+        target_price=payload_target_price,
+        fencing_token=(
+            _fencing_token(row[14]) if has_position else _fencing_token(payload["fencing_token"])
+        ),
         created_at=row[20] or row[5],
         updated_at=row[21] or row[6],
         lifecycle=lifecycle,
@@ -349,14 +359,45 @@ def _require_payload_value(payload: dict[str, object], field: str, expected: obj
         raise ShadowExecutionError("shadow intent payload is incomplete")
     actual = payload[field]
     if field in {"entry_price", "stop_price", "target_price"}:
-        try:
-            matches = float(actual) == float(expected)
-        except (TypeError, ValueError):
-            matches = False
+        matches = _price_projection_matches(actual, expected)
     else:
         matches = str(actual) == str(expected)
     if not matches:
         raise ShadowExecutionError("shadow intent payload and table columns disagree")
+
+
+def _payload_price(payload: dict[str, object], field: str) -> float:
+    if field not in payload:
+        raise ShadowExecutionError("shadow intent payload is incomplete")
+    decimal_value = _positive_decimal(payload[field])
+    return float(decimal_value)
+
+
+def _price_projection_matches(payload_value: object, projection_value: object) -> bool:
+    try:
+        return abs(_positive_decimal(payload_value) - _positive_decimal(projection_value)) <= (
+            _PRICE_PROJECTION_TOLERANCE
+        )
+    except ShadowExecutionError:
+        return False
+
+
+def _positive_decimal(value: object) -> Decimal:
+    if value is None or isinstance(value, bool):
+        raise ShadowExecutionError("shadow price projection is invalid")
+    try:
+        decimal_value = Decimal(str(value))
+    except (InvalidOperation, TypeError, ValueError):
+        raise ShadowExecutionError("shadow price projection is invalid") from None
+    if not decimal_value.is_finite() or decimal_value <= 0:
+        raise ShadowExecutionError("shadow price projection is invalid")
+    return decimal_value
+
+
+def _fencing_token(value: object) -> int:
+    if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+        raise ShadowExecutionError("shadow fencing token is invalid")
+    return value
 
 
 def _canonical_json(value: dict[str, object]) -> str:
