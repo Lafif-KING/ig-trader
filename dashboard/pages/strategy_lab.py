@@ -89,7 +89,7 @@ def render(snapshot: StrategyLabSnapshot) -> None:
             for row in filtered
         ],
         hide_index=True,
-        use_container_width=True,
+        width="stretch",
     )
     st.caption(
         "Champion status is research evidence only; project governance controls every promotion."
