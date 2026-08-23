@@ -2,7 +2,7 @@ name: Cloud foundation CI
 
 on:
   push:
-    branches: ["main", "codex/g4a-01-cloud-foundation", "codex/g4b-02a1-operational-alerts", "codex/g4b-02b1-execution-lease", "codex/g4b-02b2a-db-bootstrap"]
+    branches: ["main", "codex/g4a-01-cloud-foundation", "codex/g4b-02a1-operational-alerts", "codex/g4b-02b1-execution-lease", "codex/g4b-02b2a-db-bootstrap", "codex/sl01-multi-instrument-strategy-lab", "codex/sl01-dq01-integration"]
   pull_request:
     branches: ["main"]
   workflow_dispatch:
@@ -72,6 +72,13 @@ jobs:
             --junitxml=artifacts/ci/tests-dq01-demo-qualification.xml \
             tests/test_demo_execution.py \
             tests/test_demo_qualification.py
+
+      - name: SL-01 Strategy Lab offline tests
+        run: |
+          poetry run pytest -q \
+            --junitxml=artifacts/ci/tests-sl01-strategy-lab.xml \
+            tests/test_strategy_lab.py \
+            tests/test_strategy_lab_dashboard.py
 
       - name: Collect and run complete clean suite
         run: |

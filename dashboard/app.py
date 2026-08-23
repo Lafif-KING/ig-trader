@@ -13,7 +13,7 @@ import streamlit as st
 
 from dashboard.components import configure_page
 from dashboard.models import GitHubStatus
-from dashboard.pages import demo, live, overview, roadmap, shadow, system, tests_ci
+from dashboard.pages import demo, live, overview, roadmap, shadow, strategy_lab, system, tests_ci
 from dashboard.sources.github import (
     ANONYMOUS_CACHE_TTL_SECONDS,
     TOKEN_CACHE_TTL_SECONDS,
@@ -23,10 +23,12 @@ from dashboard.sources.github import (
 from dashboard.sources.project import ProjectGateValidationError, load_project_status
 from dashboard.sources.replay import historical_replay_summary
 from dashboard.sources.shadow import load_shadow_data
+from dashboard.sources.strategy_lab import load_strategy_lab_snapshot
 
 PAGES = (
     "Overview",
     "Project Roadmap",
+    "Strategy Lab",
     "Tests & GitHub CI",
     "Shadow Results",
     "Demo Results",
@@ -81,6 +83,8 @@ def render_control_center(page: str, github: GitHubStatus | None = None) -> None
         overview.render(project_status.summary, project_status.gates, github_status)
     elif page == "Project Roadmap":
         roadmap.render(project_status.gates)
+    elif page == "Strategy Lab":
+        strategy_lab.render(load_strategy_lab_snapshot())
     elif page == "Tests & GitHub CI":
         tests_ci.render(github_status)
     elif page == "Shadow Results":

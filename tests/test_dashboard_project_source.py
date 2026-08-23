@@ -57,6 +57,17 @@ def test_foundation_progress_is_83_percent_and_authority_is_separate() -> None:
     assert dq01_gate.weight == 0
 
 
+def test_strategy_lab_gate_is_in_progress_and_cannot_change_authority_readiness() -> None:
+    gates = {gate.gate_id: gate for gate in load_project_gates()}
+    strategy_lab = gates["SL01_MULTI_INSTRUMENT_STRATEGY_LAB"]
+    assert strategy_lab.group == "ENHANCEMENTS"
+    assert strategy_lab.governance_status == "IN_PROGRESS"
+    assert strategy_lab.technical_status == "IN_PROGRESS"
+    assert strategy_lab.weight == 0
+    authority = tuple(gate for gate in gates.values() if gate.group in {"SHADOW", "DEMO", "LIVE"})
+    assert weighted_progress(authority, authority=True) == 32
+
+
 def test_project_gates_keep_reviewed_links_and_current_verification_dates() -> None:
     gates = {gate.gate_id: gate for gate in load_project_gates()}
     assert gates["G1"].technical_status == "PASS"

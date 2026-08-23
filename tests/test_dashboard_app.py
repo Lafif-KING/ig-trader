@@ -68,6 +68,14 @@ def test_github_unavailable_mode_does_not_crash(monkeypatch) -> None:
     assert "GITHUB DATA TEMPORARILY UNAVAILABLE" in _rendered(app_test)
 
 
+def test_strategy_lab_page_is_read_only_with_or_without_local_artifacts(monkeypatch) -> None:
+    app_test = _run_app(monkeypatch, "Strategy Lab")
+    rendered = _rendered(app_test)
+    assert "STRATEGY LAB ARTIFACTS NOT AVAILABLE" in rendered or "Leaderboard" in rendered
+    labels = [button.label.casefold() for button in app_test.button]
+    assert labels == ["refresh public github status"]
+
+
 def test_mocked_green_ci_and_main_sha_render(monkeypatch) -> None:
     workflow = WorkflowRun(
         "CI", 9, "completed", "success", "c" * 40, "main", "https://example.test", None, None

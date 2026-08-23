@@ -1,0 +1,119 @@
+"""Read-only Strategy Lab evidence page."""
+
+from __future__ import annotations
+
+import streamlit as st
+
+from dashboard.components import render_summary_cards
+from dashboard.sources.strategy_lab import StrategyLabSnapshot
+
+
+def render(snapshot: StrategyLabSnapshot) -> None:
+    st.header("Strategy Lab")
+    st.write(
+        "Local, broker-neutral research evidence. This page has no execution controls and cannot "
+        "promote a strategy to Demo or Live trading."
+    )
+    if not snapshot.available:
+        st.info("STRATEGY LAB ARTIFACTS NOT AVAILABLE")
+        st.caption(
+            "Run the offline Strategy Lab CLI with local fixtures to generate reviewed evidence."
+        )
+        return
+    instrument_summary = snapshot.instrument_summary or {}
+    strategy_summary = snapshot.strategy_summary or {}
+    dataset_status = instrument_summary.get("dataset_status", {})
+    render_summary_cards(
+        (
+            (
+                "Instrument count",
+                str(instrument_summary.get("instrument_count", 0)),
+                "Local artifact evidence.",
+            ),
+            (
+                "Datasets available",
+                _count(dataset_status, "available"),
+                "Local evidence only.",
+            ),
+            (
+                "Strategies tested",
+                str(strategy_summary.get("strategies_tested", 0)),
+                "Evidence count.",
+            ),
+            (
+                "Combinations tested",
+                str(strategy_summary.get("combinations_tested", 0)),
+                "Evidence count.",
+            ),
+            (
+                "Champion candidates",
+                str(strategy_summary.get("champion_candidates", 0)),
+                "Not a promotion.",
+            ),
+            (
+                "Challengers",
+                str(strategy_summary.get("challengers", 0)),
+                "Retained for comparison.",
+            ),
+            (
+                "Rejected combinations",
+                str(strategy_summary.get("rejected", 0)),
+                "Conservative research status.",
+            ),
+            (
+                "Insufficient-data combinations",
+                str(strategy_summary.get("insufficient_data", 0)),
+                "No missing data is invented.",
+            ),
+        )
+    )
+    filtered = _filters(snapshot.entries)
+    st.subheader("Leaderboard")
+    st.dataframe(
+        [
+            {
+                "Instrument": row["instrument"],
+                "Asset class": row["asset_class"],
+                "Strategy": row["strategy"],
+                "Version": row["version"],
+                "Timeframe": row["timeframe"],
+                "Trades": row["trades"],
+                "Win rate": row.get("win_rate"),
+                "Net R": row.get("net_r"),
+                "Expectancy": row.get("expectancy"),
+                "Profit factor": row.get("profit_factor"),
+                "Max drawdown": row.get("max_drawdown"),
+                "OOS expectancy": row.get("oos_expectancy"),
+                "Status": row["status"],
+            }
+            for row in filtered
+        ],
+        hide_index=True,
+        use_container_width=True,
+    )
+    st.caption(
+        "Champion status is research evidence only; project governance controls every promotion."
+    )
+
+
+def _filters(entries: tuple[dict[str, object], ...]) -> tuple[dict[str, object], ...]:
+    options = {
+        name: ("All",) + tuple(sorted({str(item[name]) for item in entries}))
+        for name in ("asset_class", "instrument", "strategy", "timeframe", "status")
+    }
+    columns = st.columns(5)
+    selections = {
+        name: column.selectbox(name.replace("_", " ").title(), options[name])
+        for column, name in zip(columns, options, strict=True)
+    }
+    return tuple(
+        item
+        for item in entries
+        if all(
+            selection == "All" or item[name] == selection for name, selection in selections.items()
+        )
+    )
+
+
+def _count(value: object, name: str) -> str:
+    return str(value.get(name, 0)) if isinstance(value, dict) else "0"
