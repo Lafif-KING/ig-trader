@@ -33,6 +33,7 @@ pytest-asyncio = "^1.4.0"
 
 [tool.poetry.group.dashboard.dependencies]
 streamlit = "1.61.1"
+jsonschema = "^4.26.0"
 
 [build-system]
 requires = ["poetry-core>=2.0.0,<3.0.0"]

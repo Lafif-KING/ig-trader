@@ -7,6 +7,9 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
+from jsonschema import Draft202012Validator, FormatChecker
+from jsonschema.exceptions import SchemaError
+
 from dashboard.models import ProjectGate
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -90,24 +93,23 @@ def _parse_gate(item: Any) -> ProjectGate:
     )
 
 
-def _validate_schema_document(schema_path: Path = DEFAULT_SCHEMA_PATH) -> None:
-    """Verify that the committed schema retains the dashboard's reviewed contract."""
+def _load_schema_document(schema_path: Path = DEFAULT_SCHEMA_PATH) -> dict[str, Any]:
+    """Load the committed Draft 2020-12 schema before validating gate data."""
 
     try:
         schema = json.loads(schema_path.read_text(encoding="utf-8"))
-        required = set(schema["properties"]["gates"]["items"]["required"])
-    except (KeyError, OSError, TypeError, json.JSONDecodeError) as error:
+        Draft202012Validator.check_schema(schema)
+    except (KeyError, OSError, SchemaError, TypeError, json.JSONDecodeError) as error:
         raise ProjectGateValidationError("Unable to read the project gate JSON schema.") from error
-    if required != REQUIRED_FIELDS:
-        raise ProjectGateValidationError(
-            "Project gate JSON schema does not match the reviewed contract."
-        )
+    if not isinstance(schema, dict):
+        raise ProjectGateValidationError("Project gate JSON schema must be a JSON object.")
+    return schema
 
 
 def load_project_gates(path: Path = DEFAULT_GATES_PATH) -> tuple[ProjectGate, ...]:
     """Read reviewed data from disk; this source has no network or database path."""
 
-    _validate_schema_document(path.parent / "gates.schema.json")
+    schema = _load_schema_document(path.parent / "gates.schema.json")
     try:
         document = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as error:
@@ -116,6 +118,12 @@ def load_project_gates(path: Path = DEFAULT_GATES_PATH) -> tuple[ProjectGate, ..
         ) from error
     if not isinstance(document, dict) or not isinstance(document.get("gates"), list):
         raise ProjectGateValidationError("Project gate file must contain a gates list.")
+    errors = sorted(
+        Draft202012Validator(schema, format_checker=FormatChecker()).iter_errors(document),
+        key=lambda error: list(error.absolute_path),
+    )
+    if errors:
+        raise ProjectGateValidationError("Project gate data does not match its JSON schema.")
     gates = tuple(_parse_gate(item) for item in document["gates"])
     if not gates:
         raise ProjectGateValidationError("Project gate file cannot be empty.")

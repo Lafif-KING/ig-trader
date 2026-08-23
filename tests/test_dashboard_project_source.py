@@ -28,5 +28,5 @@ def test_gate_source_rejects_missing_required_field(tmp_path) -> None:
     del source["gates"][0]["next_action"]
     source_path.write_text(json.dumps(source), encoding="utf-8")
     schema_path.write_text(schema, encoding="utf-8")
-    with pytest.raises(ProjectGateValidationError, match="missing required fields"):
+    with pytest.raises(ProjectGateValidationError, match="does not match its JSON schema"):
         load_project_gates(source_path)
