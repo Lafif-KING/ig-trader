@@ -1,12 +1,31 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "title": "IG Trader Control Center reviewed project gates",
+  "title": "IG Trader Control Center reviewed project status",
   "description": "Reviewed governance and technical evidence for the read-only dashboard. This file cannot grant execution authority.",
   "type": "object",
-  "required": ["schema_version", "gates"],
+  "required": ["schema_version", "project_summary", "gates"],
   "additionalProperties": false,
   "properties": {
     "schema_version": {"const": 1},
+    "project_summary": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["current_phase_gate_id", "current_phase", "current_status", "current_blocker", "next_action", "execution_mode", "broker_order_authority", "demo_execution", "live_execution", "real_database_state", "real_database_governance", "last_verified_at"],
+      "properties": {
+        "current_phase_gate_id": {"type": "string", "minLength": 1},
+        "current_phase": {"type": "string", "minLength": 1},
+        "current_status": {"$ref": "#/$defs/status"},
+        "current_blocker": {"type": "string", "minLength": 1},
+        "next_action": {"type": "string", "minLength": 1},
+        "execution_mode": {"enum": ["NO_EXECUTION", "SHADOW_DEMO", "DEMO_EXECUTION", "LIVE_EXECUTION"]},
+        "broker_order_authority": {"const": "OFF"},
+        "demo_execution": {"$ref": "#/$defs/status"},
+        "live_execution": {"$ref": "#/$defs/status"},
+        "real_database_state": {"$ref": "#/$defs/status"},
+        "real_database_governance": {"const": "RECOVERY_HOLD"},
+        "last_verified_at": {"type": "string", "format": "date-time"}
+      }
+    },
     "gates": {
       "type": "array",
       "minItems": 1,

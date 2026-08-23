@@ -41,6 +41,32 @@ class ProjectGate:
 
 
 @dataclass(frozen=True)
+class ProjectSummary:
+    """Reviewed top-level status that cannot be changed by GitHub evidence."""
+
+    current_phase_gate_id: str
+    current_phase: str
+    current_status: GateStatus
+    current_blocker: str
+    next_action: str
+    execution_mode: str
+    broker_order_authority: str
+    demo_execution: GateStatus
+    live_execution: GateStatus
+    real_database_state: GateStatus
+    real_database_governance: str
+    last_verified_at: datetime
+
+
+@dataclass(frozen=True)
+class ProjectStatus:
+    """Single read-only project source response for pages and calculations."""
+
+    summary: ProjectSummary
+    gates: tuple[ProjectGate, ...]
+
+
+@dataclass(frozen=True)
 class PullRequest:
     """Safe, public pull-request metadata."""
 
@@ -48,6 +74,7 @@ class PullRequest:
     title: str
     state: str
     url: str
+    head_sha: str | None = None
     merged_at: str | None = None
 
 
@@ -92,6 +119,7 @@ class GitHubStatus:
     open_pull_requests: tuple[PullRequest, ...] = ()
     merged_pull_requests: tuple[PullRequest, ...] = ()
     latest_workflow: WorkflowRun | None = None
+    workflow_context: str = "MAIN"
 
 
 @dataclass(frozen=True)

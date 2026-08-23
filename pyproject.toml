@@ -31,8 +31,12 @@ mypy = ">=2.3.0,<3.0.0"
 respx = "^0.23.1"
 pytest-asyncio = "^1.4.0"
 
+[tool.poetry.group.dashboard]
+optional = true
+
 [tool.poetry.group.dashboard.dependencies]
 streamlit = "1.61.1"
+httpx = "^0.28.1"
 jsonschema = "^4.26.0"
 
 [build-system]

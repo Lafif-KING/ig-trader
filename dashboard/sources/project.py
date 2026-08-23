@@ -10,12 +10,12 @@ from typing import Any
 from jsonschema import Draft202012Validator, FormatChecker
 from jsonschema.exceptions import SchemaError
 
-from dashboard.models import ProjectGate
+from dashboard.models import ProjectGate, ProjectStatus, ProjectSummary
 
 ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_GATES_PATH = ROOT / "project" / "gates.json"
 DEFAULT_SCHEMA_PATH = ROOT / "project" / "gates.schema.json"
-REQUIRED_FIELDS = {
+GATE_REQUIRED_FIELDS = {
     "gate_id",
     "display_name",
     "group",
@@ -31,6 +31,20 @@ REQUIRED_FIELDS = {
     "evidence",
     "last_verified_at",
 }
+SUMMARY_REQUIRED_FIELDS = {
+    "current_phase_gate_id",
+    "current_phase",
+    "current_status",
+    "current_blocker",
+    "next_action",
+    "execution_mode",
+    "broker_order_authority",
+    "demo_execution",
+    "live_execution",
+    "real_database_state",
+    "real_database_governance",
+    "last_verified_at",
+}
 ALLOWED_STATUSES = {
     "PASS",
     "PASS_WITH_KNOWN_GAP",
@@ -44,6 +58,9 @@ ALLOWED_STATUSES = {
     "UNKNOWN",
 }
 ALLOWED_GROUPS = {"FOUNDATION", "SHADOW", "DEMO", "LIVE", "ENHANCEMENTS"}
+ALLOWED_EXECUTION_MODES = {"NO_EXECUTION", "SHADOW_DEMO", "DEMO_EXECUTION", "LIVE_EXECUTION"}
+ALLOWED_BROKER_AUTHORITIES = {"OFF"}
+ALLOWED_DATABASE_GOVERNANCE = {"RECOVERY_HOLD"}
 
 
 class ProjectGateValidationError(ValueError):
@@ -53,7 +70,7 @@ class ProjectGateValidationError(ValueError):
 def _parse_gate(item: Any) -> ProjectGate:
     if not isinstance(item, dict):
         raise ProjectGateValidationError("Each gate must be a JSON object.")
-    missing = REQUIRED_FIELDS.difference(item)
+    missing = GATE_REQUIRED_FIELDS.difference(item)
     if missing:
         raise ProjectGateValidationError(f"Gate is missing required fields: {sorted(missing)}")
     if not isinstance(item["weight"], int) or item["weight"] < 0:
@@ -93,6 +110,56 @@ def _parse_gate(item: Any) -> ProjectGate:
     )
 
 
+def _parse_summary(item: Any) -> ProjectSummary:
+    if not isinstance(item, dict):
+        raise ProjectGateValidationError("Project summary must be a JSON object.")
+    missing = SUMMARY_REQUIRED_FIELDS.difference(item)
+    if missing:
+        raise ProjectGateValidationError(
+            f"Project summary is missing required fields: {sorted(missing)}"
+        )
+    text_fields = SUMMARY_REQUIRED_FIELDS.difference({"last_verified_at"})
+    if not all(isinstance(item[field], str) and item[field] for field in text_fields):
+        raise ProjectGateValidationError("Project summary fields must be non-empty text.")
+    if item["current_status"] not in ALLOWED_STATUSES:
+        raise ProjectGateValidationError(
+            "Project summary status is not defined by the reviewed schema."
+        )
+    if item["execution_mode"] not in ALLOWED_EXECUTION_MODES:
+        raise ProjectGateValidationError("Project summary execution mode is not allowed.")
+    if item["broker_order_authority"] not in ALLOWED_BROKER_AUTHORITIES:
+        raise ProjectGateValidationError("Project summary broker authority is not allowed.")
+    if (
+        item["demo_execution"] not in ALLOWED_STATUSES
+        or item["live_execution"] not in ALLOWED_STATUSES
+    ):
+        raise ProjectGateValidationError("Project summary execution governance is not allowed.")
+    if item["real_database_state"] not in ALLOWED_STATUSES:
+        raise ProjectGateValidationError("Project summary database state is not allowed.")
+    if item["real_database_governance"] not in ALLOWED_DATABASE_GOVERNANCE:
+        raise ProjectGateValidationError("Project summary database governance is not allowed.")
+    try:
+        verified_at = datetime.fromisoformat(item["last_verified_at"].replace("Z", "+00:00"))
+    except (AttributeError, TypeError, ValueError) as error:
+        raise ProjectGateValidationError(
+            "Project summary last_verified_at must be an ISO-8601 timestamp."
+        ) from error
+    return ProjectSummary(
+        current_phase_gate_id=item["current_phase_gate_id"],
+        current_phase=item["current_phase"],
+        current_status=item["current_status"],
+        current_blocker=item["current_blocker"],
+        next_action=item["next_action"],
+        execution_mode=item["execution_mode"],
+        broker_order_authority=item["broker_order_authority"],
+        demo_execution=item["demo_execution"],
+        live_execution=item["live_execution"],
+        real_database_state=item["real_database_state"],
+        real_database_governance=item["real_database_governance"],
+        last_verified_at=verified_at,
+    )
+
+
 def _load_schema_document(schema_path: Path = DEFAULT_SCHEMA_PATH) -> dict[str, Any]:
     """Load the committed Draft 2020-12 schema before validating gate data."""
 
@@ -106,8 +173,8 @@ def _load_schema_document(schema_path: Path = DEFAULT_SCHEMA_PATH) -> dict[str, 
     return schema
 
 
-def load_project_gates(path: Path = DEFAULT_GATES_PATH) -> tuple[ProjectGate, ...]:
-    """Read reviewed data from disk; this source has no network or database path."""
+def load_project_status(path: Path = DEFAULT_GATES_PATH) -> ProjectStatus:
+    """Read reviewed summary and gates from disk without a network or database path."""
 
     schema = _load_schema_document(path.parent / "gates.schema.json")
     try:
@@ -124,9 +191,18 @@ def load_project_gates(path: Path = DEFAULT_GATES_PATH) -> tuple[ProjectGate, ..
     )
     if errors:
         raise ProjectGateValidationError("Project gate data does not match its JSON schema.")
+    summary = _parse_summary(document.get("project_summary"))
     gates = tuple(_parse_gate(item) for item in document["gates"])
     if not gates:
         raise ProjectGateValidationError("Project gate file cannot be empty.")
     if len({gate.gate_id for gate in gates}) != len(gates):
         raise ProjectGateValidationError("Project gate IDs must be unique.")
-    return gates
+    if summary.current_phase_gate_id not in {gate.gate_id for gate in gates}:
+        raise ProjectGateValidationError("Project summary phase gate must exist in reviewed gates.")
+    return ProjectStatus(summary=summary, gates=gates)
+
+
+def load_project_gates(path: Path = DEFAULT_GATES_PATH) -> tuple[ProjectGate, ...]:
+    """Backward-compatible gate accessor for calculations that need no summary."""
+
+    return load_project_status(path).gates

@@ -12,7 +12,15 @@ def _dashboard_sources() -> tuple[Path, ...]:
 
 
 def test_dashboard_has_no_broker_database_or_azure_imports() -> None:
-    prohibited = {"ig_trader", "lightstreamer", "psycopg", "sqlalchemy", "azure"}
+    prohibited = {
+        "azure",
+        "ig_trader",
+        "lightstreamer",
+        "lightstreamer_client_lib",
+        "psycopg",
+        "sqlalchemy",
+        "ta",
+    }
     for path in _dashboard_sources():
         tree = ast.parse(path.read_text(encoding="utf-8"))
         imports = [
@@ -61,4 +69,30 @@ def test_dashboard_image_is_separate_non_root_and_does_not_copy_trading_source()
     dockerfile = (ROOT / "Dockerfile.dashboard").read_text(encoding="utf-8")
     assert "USER 10002:10002" in dockerfile
     assert "COPY src" not in dockerfile
+    assert "poetry sync --only dashboard --no-root --no-ansi" in dockerfile
+    assert "--with dashboard" not in dockerfile
     assert '"streamlit", "run", "dashboard/app.py"' in dockerfile
+
+
+def test_dashboard_dependency_group_and_ci_proof_are_isolated() -> None:
+    pyproject = (ROOT / "pyproject.toml").read_text(encoding="utf-8")
+    ci = (ROOT / ".github" / "workflows" / "ci.yaml").read_text(encoding="utf-8")
+    assert "[tool.poetry.group.dashboard]" in pyproject
+    assert "optional = true" in pyproject
+    assert "[tool.poetry.group.dashboard.dependencies]" in pyproject
+    for dependency in ('streamlit = "1.61.1"', 'httpx = "^0.28.1"', 'jsonschema = "^4.26.0"'):
+        assert dependency in pyproject
+    assert "poetry sync --with dashboard --no-interaction --no-ansi" in ci
+    assert "Verify dashboard image has only dashboard dependencies" in ci
+    assert '"codex/pi1-project-dashboard-mvp"' not in ci
+    for dependency in (
+        "streamlit",
+        "httpx",
+        "jsonschema",
+        "psycopg",
+        "sqlalchemy",
+        "azure",
+        "lightstreamer_client_lib",
+        "ta",
+    ):
+        assert dependency in ci

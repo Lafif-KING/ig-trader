@@ -19,7 +19,7 @@ cloud, database, execution-lease, Demo, or Live authority.
 2. Run:
 
    ```powershell
-   poetry sync
+   poetry sync --with dashboard
    ```
 
    This installs locked local dependencies including Streamlit. It does not

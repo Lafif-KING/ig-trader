@@ -6,7 +6,7 @@ from collections.abc import Iterable
 
 import streamlit as st
 
-from dashboard.models import ProjectGate, WorkflowRun
+from dashboard.models import ProjectGate, ProjectSummary, WorkflowRun
 from dashboard.status import display_status
 
 
@@ -20,11 +20,14 @@ def configure_page() -> None:
     )
 
 
-def render_safety_banner() -> None:
+def render_safety_banner(summary: ProjectSummary) -> None:
     st.error(
-        "EXECUTION MODE: NO_EXECUTION\n\nBROKER ORDER AUTHORITY: OFF\n\n"
-        "DEMO EXECUTION: DISABLED\n\nLIVE EXECUTION: DISABLED\n\n"
-        "REAL AZURE DATABASE: RECOVERY HOLD / STATE UNKNOWN"
+        f"EXECUTION MODE: {summary.execution_mode}\n\n"
+        f"BROKER ORDER AUTHORITY: {summary.broker_order_authority}\n\n"
+        f"DEMO EXECUTION: {display_status(summary.demo_execution)}\n\n"
+        f"LIVE EXECUTION: {display_status(summary.live_execution)}\n\n"
+        f"REAL AZURE DATABASE: {summary.real_database_governance.replace('_', ' ')} / "
+        f"STATE {display_status(summary.real_database_state)}"
     )
 
 
@@ -58,8 +61,8 @@ def render_gate(gate: ProjectGate) -> None:
             st.write(f"- {evidence}")
 
 
-def render_workflow(workflow: WorkflowRun) -> None:
-    st.subheader(f"Latest workflow: {workflow.display_result}")
+def render_workflow(workflow: WorkflowRun, context: str) -> None:
+    st.subheader(f"Latest workflow: {workflow.display_result} — {context}")
     st.write(
         f"**{workflow.name} #{workflow.number}** tested commit `{workflow.head_sha}` "
         f"on branch `{workflow.branch}`."

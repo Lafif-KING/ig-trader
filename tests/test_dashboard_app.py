@@ -46,6 +46,10 @@ def test_app_starts_and_overview_shows_safety_banner(monkeypatch) -> None:
     assert "IG Trader Control Center" in rendered
     assert "EXECUTION MODE: NO_EXECUTION" in rendered
     assert "BROKER ORDER AUTHORITY: OFF" in rendered
+    assert "Real Azure Database Recovery — HOLD" in rendered
+    assert "The real migration 003 database state is unknown." in rendered
+    assert "Do not retry bootstrap-admin." in rendered
+    assert "RECOVERY HOLD" in rendered
 
 
 def test_locked_pages_and_no_data_shadow_state(monkeypatch) -> None:
@@ -72,7 +76,7 @@ def test_mocked_green_ci_and_main_sha_render(monkeypatch) -> None:
         monkeypatch, "Tests & GitHub CI", GitHubStatus(True, "d" * 40, latest_workflow=workflow)
     )
     rendered = _rendered(app_test)
-    assert "Latest workflow: PASS" in rendered
+    assert "Latest workflow: PASS — MAIN" in rendered
     assert "d" * 40 in rendered
 
 
@@ -93,6 +97,33 @@ def test_mocked_failed_ci_renders_first_failed_step(monkeypatch) -> None:
         monkeypatch, "Tests & GitHub CI", GitHubStatus(True, "f" * 40, latest_workflow=workflow)
     )
     assert "Dashboard tests" in _rendered(app_test)
+
+
+def test_mocked_active_pr_ci_context_renders(monkeypatch) -> None:
+    workflow = WorkflowRun(
+        "CI",
+        11,
+        "in_progress",
+        None,
+        "e" * 40,
+        "codex/dashboard",
+        "https://example.test",
+        None,
+        None,
+        pull_request=7,
+    )
+    app_test = _run_app(
+        monkeypatch,
+        "Tests & GitHub CI",
+        GitHubStatus(
+            True,
+            "f" * 40,
+            latest_workflow=workflow,
+            workflow_context="ACTIVE PR #7",
+        ),
+    )
+    rendered = _rendered(app_test)
+    assert "Latest workflow: IN PROGRESS — ACTIVE PR #7" in rendered
 
 
 def test_roadmap_renders_reviewed_gate_and_no_activation_button(monkeypatch) -> None:
