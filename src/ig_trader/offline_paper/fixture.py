@@ -10,7 +10,7 @@ from math import isfinite
 from pathlib import Path
 from typing import Any
 
-from src.ig_trader.frozen_v1_policy import FROZEN_INSTRUMENTS
+from src.ig_trader.frozen_v1_policy import G2_HISTORICAL_FIXTURE_INSTRUMENTS
 from src.ig_trader.offline_paper.domain import Candle, Quote
 
 
@@ -88,12 +88,12 @@ class LocalFixtureData:
             self._candles[instrument.epic] = self._expand_candles(item, instrument)
             self._quotes[instrument.epic] = self._parse_quote(item, instrument)
             self._exits[instrument.epic] = self._parse_exit(item, instrument)
-        if tuple(observed) != FROZEN_INSTRUMENTS:
+        if tuple(observed) != G2_HISTORICAL_FIXTURE_INSTRUMENTS:
             raise ValueError("fixture universe or order differs from frozen V1")
 
     @property
     def instruments(self) -> tuple[FixtureInstrument, ...]:
-        return tuple(self._instruments[epic] for _, epic, _, _ in FROZEN_INSTRUMENTS)
+        return tuple(self._instruments[epic] for _, epic, _, _ in G2_HISTORICAL_FIXTURE_INSTRUMENTS)
 
     def instrument(self, epic: str) -> FixtureInstrument | None:
         return self._instruments.get(epic)

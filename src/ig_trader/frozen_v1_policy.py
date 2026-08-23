@@ -9,9 +9,15 @@ from math import floor, isfinite
 
 from src.ig_trader.offline_paper.domain import AccountSnapshot, RiskDecision, TradeCandidate
 
-FROZEN_INSTRUMENTS = (
+G2_HISTORICAL_FIXTURE_INSTRUMENTS = (
     ("EURGBP", "CS.D.EURGBP.MINI.IP", "EUR", "GBP"),
     ("EURUSD", "CS.D.EURUSD.MINI.IP", "EUR", "USD"),
+    ("GBPUSD", "CS.D.GBPUSD.MINI.IP", "GBP", "USD"),
+)
+
+FROZEN_V1_PRODUCTION_INSTRUMENTS = (
+    ("EURGBP", "CS.D.EURGBP.MINI.IP", "EUR", "GBP"),
+    ("EURUSD", "CS.D.EURUSD.CEFM.IP", "EUR", "USD"),
     ("GBPUSD", "CS.D.GBPUSD.MINI.IP", "GBP", "USD"),
 )
 
@@ -47,11 +53,33 @@ class FrozenV1Config:
 
     @property
     def configuration_hash(self) -> str:
+        """The immutable historical G2 OFFLINE_PAPER identity."""
+
+        return self._configuration_hash(
+            execution_mode="OFFLINE_PAPER",
+            instruments=G2_HISTORICAL_FIXTURE_INSTRUMENTS,
+        )
+
+    @property
+    def shadow_configuration_hash(self) -> str:
+        """The production Shadow identity, distinct from historical G2."""
+
+        return self._configuration_hash(
+            execution_mode="SHADOW_DEMO",
+            instruments=FROZEN_V1_PRODUCTION_INSTRUMENTS,
+        )
+
+    def _configuration_hash(
+        self,
+        *,
+        execution_mode: str,
+        instruments: tuple[tuple[str, str, str, str], ...],
+    ) -> str:
         document = {
             "parameters": asdict(self),
-            "instruments": FROZEN_INSTRUMENTS,
+            "instruments": instruments,
             "strategy": "Scalper:rsi-adx-v1",
-            "execution_mode": "OFFLINE_PAPER",
+            "execution_mode": execution_mode,
             "ai_trading_authority": False,
             "strategy_optimization": False,
             "advanced_management": False,

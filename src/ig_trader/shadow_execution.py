@@ -10,6 +10,8 @@ from math import isfinite
 from typing import Any, Protocol
 from uuid import NAMESPACE_URL, UUID, uuid4, uuid5
 
+from src.ig_trader.frozen_v1_policy import FROZEN_V1_PRODUCTION_INSTRUMENTS
+
 
 class ExecutionMode(StrEnum):
     NO_EXECUTION = "NO_EXECUTION"
@@ -57,11 +59,7 @@ class InstrumentRegistry:
         return cls(
             {
                 epic: InstrumentMetadata(epic, 0.0001)
-                for epic in (
-                    "CS.D.EURGBP.MINI.IP",
-                    "CS.D.EURUSD.MINI.IP",
-                    "CS.D.GBPUSD.MINI.IP",
-                )
+                for _, epic, _, _ in FROZEN_V1_PRODUCTION_INSTRUMENTS
             }
         )
 

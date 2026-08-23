@@ -364,6 +364,16 @@ def test_frozen_v1_rejects_parameter_changes(field: str, value: object) -> None:
         FrozenV1Config(**{field: value})
 
 
+def test_historical_g2_fixture_uses_its_immutable_configuration_identity() -> None:
+    source = LocalFixtureData(INPUT)
+
+    assert FrozenV1Config().configuration_hash == (
+        "f858df69e5dbae0703d944a095ec5899035dcf8ab2f0ac96b3a65dde35d8244f"
+    )
+    assert source.instrument("CS.D.EURUSD.MINI.IP") is not None
+    assert source.instrument("CS.D.EURUSD.CEFM.IP") is None
+
+
 def test_paper_broker_deterministic_rejection_has_no_position(tmp_path: Path) -> None:
     rejected = frozenset({"CS.D.EURGBP.MINI.IP"})
     _, intents, broker, conductor = _components(tmp_path, rejected_epics=rejected)

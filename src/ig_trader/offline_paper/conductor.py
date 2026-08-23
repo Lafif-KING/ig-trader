@@ -13,7 +13,11 @@ from uuid import NAMESPACE_URL, uuid5
 
 import pandas as pd
 
-from src.ig_trader.frozen_v1_policy import FrozenV1Config, PortfolioRisk
+from src.ig_trader.frozen_v1_policy import (
+    G2_HISTORICAL_FIXTURE_INSTRUMENTS,
+    FrozenV1Config,
+    PortfolioRisk,
+)
 from src.ig_trader.models import SignalDirection
 from src.ig_trader.offline_paper.domain import (
     BrokerOrder,
@@ -28,7 +32,7 @@ from src.ig_trader.offline_paper.domain import (
     TradeCandidate,
     TradeIntent,
 )
-from src.ig_trader.offline_paper.fixture import FROZEN_INSTRUMENTS, LocalFixtureData
+from src.ig_trader.offline_paper.fixture import LocalFixtureData
 from src.ig_trader.offline_paper.paper_broker import PaperBroker
 from src.ig_trader.offline_paper.persistence import TradeIntentStore
 from src.ig_trader.offline_paper.ports import (
@@ -262,7 +266,7 @@ class OfflinePaperConductor:
 
     def _evaluate_cycle(self) -> tuple[TradeCandidate, ...] | None:
         result = []
-        for _, epic, _, _ in FROZEN_INSTRUMENTS:
+        for _, epic, _, _ in G2_HISTORICAL_FIXTURE_INSTRUMENTS:
             candles = self.historical_data.candles(epic, before=self.source.evaluation_time)
             quote = self.market_data.quote(epic, as_of=self.source.evaluation_time)
             references = self.source.source_references(epic)
@@ -646,7 +650,7 @@ class OfflinePaperConductor:
             and intent.strategy_version == "Scalper:rsi-adx-v1"
             and intent.source_candle_references == references
             and intent.source_fingerprint == fingerprint
-            and intent.epic in {item[1] for item in FROZEN_INSTRUMENTS}
+            and intent.epic in {item[1] for item in G2_HISTORICAL_FIXTURE_INSTRUMENTS}
         )
 
     def _completed(self, intent: TradeIntent | None, *, idempotent: bool) -> RunResult:
