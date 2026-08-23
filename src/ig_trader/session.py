@@ -34,10 +34,10 @@ class SessionManager:
             )
             raise ValueError("IG_IDENTIFIER and IG_PASSWORD must be set in .env")
 
-        logger.info("login_start", identifier=settings.ig_identifier)
+        logger.info("login_start")
 
         response = self.http_client.post(
-            "/session",
+            "session",
             json={
                 "identifier": settings.ig_identifier,
                 "password": settings.ig_password,
@@ -56,7 +56,6 @@ class SessionManager:
 
             logger.info(
                 "login_success",
-                account_id=self.account_id,
                 token_expiry=self.token_expiry.isoformat(),
             )
             return True
@@ -64,7 +63,7 @@ class SessionManager:
             logger.error(
                 "login_failed",
                 status_code=response.status_code,
-                reason=response.text,
+                reason="broker rejected authentication",
             )
             return False
 
@@ -76,7 +75,7 @@ class SessionManager:
 
         logger.info("logout_start")
         response = self.http_client.delete(
-            "/session",
+            "session",
             headers=self._get_auth_headers(),
         )
 
@@ -103,7 +102,7 @@ class SessionManager:
         headers = kwargs.pop("headers", {})
         headers.update(self._get_auth_headers())
 
-        return self.http_client._request(method, endpoint, headers=headers, **kwargs)
+        return self.http_client._request(method, endpoint.lstrip("/"), headers=headers, **kwargs)
 
     def _get_auth_headers(self) -> dict:
         """Get authorization headers for authenticated requests."""

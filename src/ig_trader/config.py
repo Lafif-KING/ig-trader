@@ -13,7 +13,9 @@ class Settings(BaseSettings):
 
     # IG API Configuration
     ig_demo: bool = True
-    ig_base_url: str = "https://demo-api.ig.com"
+    ig_base_url: str = "https://demo-api.ig.com/gateway/deal"
+    ig_expected_demo_account_id: str = ""
+    demo_operator_local: bool = False
 
     # Logging
     log_level: str = "INFO"
