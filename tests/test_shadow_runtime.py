@@ -268,15 +268,17 @@ def test_frozen_policy_derives_levels_and_restart_is_idempotent(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     store = InMemoryShadowStore(7)
-    created = warm(runtime(store), monkeypatch)
+    evidence = InMemoryShadowEvidenceStore()
+    created = warm(runtime(store, evidence), monkeypatch)
     assert created.intent is not None
     assert created.intent.lifecycle is ShadowLifecycle.SHADOW_INTENT_CREATED
     assert created.intent.stop_price == pytest.approx(0.8493)
     assert created.intent.target_price == pytest.approx(0.8513)
 
-    restarted = warm(runtime(store), monkeypatch)
+    restarted = warm(runtime(store, evidence), monkeypatch)
     assert restarted.decision_code == "DUPLICATE_CYCLE"
     assert restarted.intent == created.intent
+    assert restarted.evidence == created.evidence
     assert store.active_position_count() == 1
 
 
@@ -332,10 +334,175 @@ def test_conflicting_global_cycle_fails_closed(monkeypatch: pytest.MonkeyPatch) 
     assert duplicate.intent == created.intent
 
     for conflicting_epic in (EURUSD_EPIC, GBPUSD_EPIC):
-        with pytest.raises(ShadowExecutionError, match="duplicate"):
-            warm(runtime(store), monkeypatch, epic=conflicting_epic)
+        rejected = warm(runtime(store), monkeypatch, epic=conflicting_epic)
+        assert rejected.decision_code == "GLOBAL_CYCLE_ALREADY_CLAIMED"
+        assert rejected.intent is None
     assert store.get(created.intent.intent_id) == created.intent
     assert len(store.records) == 1
+
+
+def _wait_signal(signal: Signal) -> Signal:
+    return replace(
+        signal,
+        direction=SignalDirection.WAIT,
+        confidence=0.0,
+        metadata={},
+    )
+
+
+def test_instrument_scoped_evidence_allows_wait_buy_wait_in_one_global_cycle(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    store = InMemoryShadowStore(7)
+    evidence = InMemoryShadowEvidenceStore()
+    eurgbp = warm(runtime(store, evidence), monkeypatch, signal_transform=_wait_signal)
+    eurusd = warm(runtime(store, evidence), monkeypatch, epic=EURUSD_EPIC)
+    gbpusd = warm(
+        runtime(store, evidence),
+        monkeypatch,
+        epic=GBPUSD_EPIC,
+        signal_transform=_wait_signal,
+    )
+
+    records = evidence.for_cycle(eurgbp.cycle_id)
+    assert eurgbp.cycle_id == eurusd.cycle_id == gbpusd.cycle_id
+    assert [record.instrument for record in records] == [EPIC, EURUSD_EPIC, GBPUSD_EPIC]
+    assert [record.decision_code for record in records] == [
+        "S0_WAIT",
+        "SHADOW_INTENT_CREATED",
+        "S0_WAIT",
+    ]
+    assert eurusd.intent is not None and eurusd.intent.instrument == EURUSD_EPIC
+    assert evidence.by_intent(eurusd.intent.intent_id) == eurusd.evidence
+    assert len(store.records) == 1
+    assert eurusd.evidence.fingerprint != eurgbp.evidence.fingerprint
+    assert eurusd.evidence.broker_order_call_count == 0
+
+
+def test_instrument_scoped_evidence_retains_three_waits_without_intents(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    store = InMemoryShadowStore(7)
+    evidence = InMemoryShadowEvidenceStore()
+    results = tuple(
+        warm(
+            runtime(store, evidence),
+            monkeypatch,
+            epic=epic,
+            signal_transform=_wait_signal,
+        )
+        for epic in (EPIC, EURUSD_EPIC, GBPUSD_EPIC)
+    )
+
+    assert len({result.cycle_id for result in results}) == 1
+    assert len(evidence.for_cycle(results[0].cycle_id)) == 3
+    assert all(result.decision_code == "S0_WAIT" and result.intent is None for result in results)
+    assert store.records == {}
+
+
+def test_instrument_scoped_evidence_retains_veto_and_allowed_outcomes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    store = InMemoryShadowStore(7)
+    evidence = InMemoryShadowEvidenceStore()
+    veto = warm(
+        runtime(store, evidence),
+        monkeypatch,
+        account_value=account(balance=9_400.0),
+    )
+    allowed = warm(runtime(store, evidence), monkeypatch, epic=EURUSD_EPIC)
+
+    records = evidence.for_cycle(veto.cycle_id)
+    assert veto.decision_code == "DAILY_LOSS_LIMIT" and veto.intent is None
+    assert allowed.intent is not None and allowed.intent.instrument == EURUSD_EPIC
+    assert {record.instrument for record in records} == {EPIC, EURUSD_EPIC}
+    assert {record.decision_code for record in records} == {
+        "DAILY_LOSS_LIMIT",
+        "SHADOW_INTENT_CREATED",
+    }
+    assert allowed.evidence.portfolio_risk_code == "ALLOWED"
+    assert len(store.records) == 1
+
+
+def test_two_actionable_instruments_leave_one_intent_and_separate_evidence(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    store = InMemoryShadowStore(7)
+    evidence = InMemoryShadowEvidenceStore()
+    winner_runtime = runtime(store, evidence)
+    loser_runtime = runtime(store, evidence)
+    winner = warm(winner_runtime, monkeypatch)
+    loser = warm(loser_runtime, monkeypatch, epic=EURUSD_EPIC)
+
+    assert winner.intent is not None
+    assert loser.intent is None and loser.decision_code == "GLOBAL_CYCLE_ALREADY_CLAIMED"
+    assert len(store.records) == 1
+    assert evidence.by_intent(winner.intent.intent_id) == winner.evidence
+    assert (
+        evidence.by_intent(winner.intent.intent_id).lifecycle
+        is ShadowLifecycle.SHADOW_INTENT_CREATED
+    )
+    assert [record.instrument for record in evidence.for_cycle(winner.cycle_id)] == [
+        EPIC,
+        EURUSD_EPIC,
+    ]
+    assert winner.evidence.instrument == EPIC
+    assert loser.evidence.instrument == EURUSD_EPIC
+    assert winner_runtime.lease.authorized is True
+    assert loser_runtime.lease.authorized is True
+
+
+def test_two_actionable_instruments_concurrently_leave_one_intent(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    store = InMemoryShadowStore(7)
+    evidence = InMemoryShadowEvidenceStore()
+    values = (runtime(store, evidence), runtime(store, evidence))
+    epics = (EPIC, EURUSD_EPIC)
+    for value in values:
+        force_s0_signal(monkeypatch, value)
+
+    def evaluate(value: ShadowRuntime, epic: str):
+        result = None
+        for index in range(60):
+            result = value.evaluate_cycle(
+                quote=quote(epic=epic),
+                candle=candle(index, epic=epic),
+                account=account(),
+                now=NOW,
+            )
+        return result
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        results = tuple(executor.map(evaluate, values, epics))
+
+    winner = next(result for result in results if result.intent is not None)
+    loser = next(result for result in results if result.intent is None)
+    assert winner.decision_code == "ALLOWED"
+    assert loser.decision_code == "GLOBAL_CYCLE_ALREADY_CLAIMED"
+    assert len(store.records) == 1
+    assert evidence.by_intent(winner.intent.intent_id) == winner.evidence
+    assert [record.instrument for record in evidence.for_cycle(winner.cycle_id)] == [
+        EPIC,
+        EURUSD_EPIC,
+    ]
+    assert all(value.lease.authorized for value in values)
+    assert all(value.broker_order_call_count == 0 for value in values)
+
+
+def test_same_instrument_evidence_conflict_blocks_intent_before_store_mutation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    store = InMemoryShadowStore(7)
+    evidence = InMemoryShadowEvidenceStore()
+    waiting = warm(runtime(store, evidence), monkeypatch, signal_transform=_wait_signal)
+
+    with pytest.raises(ShadowRuntimeError, match="identity conflicts"):
+        warm(runtime(store, evidence), monkeypatch)
+
+    assert waiting.intent is None
+    assert store.records == {}
+    assert evidence.for_cycle(waiting.cycle_id) == (waiting.evidence,)
 
 
 def test_global_cycle_identity_is_internal_and_instrument_neutral() -> None:
@@ -1082,6 +1249,28 @@ def test_postgres_shadow_runtime_lifecycle_and_restart(monkeypatch: pytest.Monke
         ).intent
         == created
     )
+    same_cycle_wait = warm(
+        ShadowRuntime(lease=leader, store=store, evidence=evidence),
+        monkeypatch,
+        epic=GBPUSD_EPIC,
+        signal_transform=_wait_signal,
+    )
+    same_cycle_loser = warm(
+        ShadowRuntime(lease=leader, store=store, evidence=evidence),
+        monkeypatch,
+        epic=EURUSD_EPIC,
+    )
+    assert same_cycle_wait.decision_code == "S0_WAIT"
+    assert same_cycle_loser.decision_code == "GLOBAL_CYCLE_ALREADY_CLAIMED"
+    assert store.get(created.intent_id) == created
+    assert evidence.by_intent(created.intent_id).instrument == EPIC
+    assert {record.instrument for record in evidence.for_cycle(expected_cycle)} == {
+        EPIC,
+        EURUSD_EPIC,
+        GBPUSD_EPIC,
+    }
+    assert leader.authorized is True
+    assert created_runtime.broker_order_call_count == 0
 
     stale_lease = leader.lease
     assert stale_lease is not None and lease_store.release(stale_lease)

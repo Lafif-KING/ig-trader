@@ -187,6 +187,7 @@ class ShadowRiskEvidence:
 @dataclass(frozen=True)
 class ShadowCycleEvidence:
     cycle_id: str
+    instrument: str
     configuration_identity: str
     fingerprint: str
     decision_code: str
@@ -203,6 +204,7 @@ class ShadowCycleEvidence:
     def __post_init__(self) -> None:
         if (
             not self.cycle_id.strip()
+            or not self.instrument.strip()
             or not self.configuration_identity
             or not self.fingerprint
             or not self.decision_code
@@ -219,6 +221,12 @@ class ShadowCycleEvidence:
         elif self.performance is not None:
             raise ShadowRuntimeError("unfinished shadow evidence cannot contain performance")
 
+    @property
+    def identity(self) -> tuple[str, str]:
+        """Instrument-scoped identity within an instrument-neutral global cycle."""
+
+        return self.cycle_id, self.instrument
+
 
 class ShadowEvidenceStore(Protocol):
     """Evidence ledger contract.
@@ -230,34 +238,56 @@ class ShadowEvidenceStore(Protocol):
 
     def record(self, evidence: ShadowCycleEvidence) -> ShadowCycleEvidence: ...
 
+    def check_available(self, evidence: ShadowCycleEvidence) -> None: ...
+
     def by_intent(self, intent_id: UUID) -> ShadowCycleEvidence | None: ...
+
+    def for_cycle(self, cycle_id: str) -> tuple[ShadowCycleEvidence, ...]: ...
 
 
 class InMemoryShadowEvidenceStore:
-    """Test-only disposable ledger that rejects conflicting global decisions."""
+    """Test-only instrument-scoped ledger for global Shadow cycles."""
 
     def __init__(self) -> None:
-        self.records: dict[str, ShadowCycleEvidence] = {}
-        self._intent_cycles: dict[UUID, str] = {}
+        self.records: dict[tuple[str, str], ShadowCycleEvidence] = {}
+        self._intent_keys: dict[UUID, tuple[str, str]] = {}
         self._lock = Lock()
 
     def record(self, evidence: ShadowCycleEvidence) -> ShadowCycleEvidence:
         with self._lock:
-            existing = self.records.get(evidence.cycle_id)
-            if existing is not None:
-                _validate_evidence_update(existing, evidence)
+            self._check_available(evidence)
             if evidence.intent_id is not None:
-                cycle = self._intent_cycles.get(evidence.intent_id)
-                if cycle is not None and cycle != evidence.cycle_id:
-                    raise ShadowRuntimeError("shadow evidence intent identity conflicts")
-                self._intent_cycles[evidence.intent_id] = evidence.cycle_id
-            self.records[evidence.cycle_id] = evidence
+                self._intent_keys[evidence.intent_id] = evidence.identity
+            self.records[evidence.identity] = evidence
             return evidence
+
+    def check_available(self, evidence: ShadowCycleEvidence) -> None:
+        """Fail before durable mutation if this instrument slot conflicts."""
+
+        with self._lock:
+            self._check_available(evidence)
+
+    def _check_available(self, evidence: ShadowCycleEvidence) -> None:
+        existing = self.records.get(evidence.identity)
+        if existing is not None:
+            _validate_evidence_update(existing, evidence)
+        if evidence.intent_id is not None:
+            key = self._intent_keys.get(evidence.intent_id)
+            if key is not None and key != evidence.identity:
+                raise ShadowRuntimeError("shadow evidence intent identity conflicts")
 
     def by_intent(self, intent_id: UUID) -> ShadowCycleEvidence | None:
         with self._lock:
-            cycle_id = self._intent_cycles.get(intent_id)
-            return self.records.get(cycle_id) if cycle_id is not None else None
+            key = self._intent_keys.get(intent_id)
+            return self.records.get(key) if key is not None else None
+
+    def for_cycle(self, cycle_id: str) -> tuple[ShadowCycleEvidence, ...]:
+        with self._lock:
+            return tuple(
+                evidence
+                for (_cycle_id, _instrument), evidence in sorted(self.records.items())
+                if _cycle_id == cycle_id
+            )
 
 
 class OneShotRiskPermit:
@@ -358,6 +388,7 @@ class ShadowRuntime:
         if appended.gap_reset:
             return self._record(
                 cycle_id,
+                quote.epic,
                 "CANDLE_GAP_WARMUP_RESET",
                 "NOT_EVALUATED",
                 None,
@@ -368,6 +399,7 @@ class ShadowRuntime:
         if len(candles) < self.config.warmup_candles:
             return self._record(
                 cycle_id,
+                quote.epic,
                 "WARMUP_INCOMPLETE",
                 "NOT_EVALUATED",
                 None,
@@ -383,6 +415,7 @@ class ShadowRuntime:
         ):
             return self._record(
                 cycle_id,
+                quote.epic,
                 "CANDLE_WINDOW_STALE",
                 "NOT_EVALUATED",
                 None,
@@ -402,6 +435,7 @@ class ShadowRuntime:
         except Exception:
             return self._record(
                 cycle_id,
+                quote.epic,
                 "STRATEGY_OUTPUT_INVALID",
                 "NOT_EVALUATED",
                 None,
@@ -409,7 +443,15 @@ class ShadowRuntime:
                 {"candles": len(candles)},
             )
         if direction not in {"BUY", "SELL"}:
-            return self._record(cycle_id, "S0_WAIT", "NOT_EVALUATED", None, now, {"signal": "WAIT"})
+            return self._record(
+                cycle_id,
+                quote.epic,
+                "S0_WAIT",
+                "NOT_EVALUATED",
+                None,
+                now,
+                {"signal": "WAIT"},
+            )
         atr = produced.metadata["atr"]
         raw_stop_pips = float(atr) / metadata.pip_size * self.config.stop_atr_multiplier
         effective_stop_pips = max(raw_stop_pips, quote.minimum_stop_pips)
@@ -425,6 +467,7 @@ class ShadowRuntime:
         if effective_stop_pips > self.config.maximum_stop_pips:
             return self._record(
                 cycle_id,
+                quote.epic,
                 "MAXIMUM_STOP_EXCEEDED",
                 "NOT_EVALUATED",
                 None,
@@ -435,6 +478,7 @@ class ShadowRuntime:
         if spread_pips > self.config.maximum_spread_pips:
             return self._record(
                 cycle_id,
+                quote.epic,
                 "MAXIMUM_SPREAD_EXCEEDED",
                 "NOT_EVALUATED",
                 None,
@@ -445,6 +489,7 @@ class ShadowRuntime:
         if spread_to_target_ratio > self.config.maximum_spread_to_target_ratio:
             return self._record(
                 cycle_id,
+                quote.epic,
                 "SPREAD_TARGET_RATIO_EXCEEDED",
                 "NOT_EVALUATED",
                 None,
@@ -463,6 +508,17 @@ class ShadowRuntime:
         )
         existing = self.store.get(intent_id)
         if existing is not None:
+            if existing.instrument != quote.epic:
+                return self._record(
+                    cycle_id,
+                    quote.epic,
+                    "GLOBAL_CYCLE_ALREADY_CLAIMED",
+                    "NOT_EVALUATED",
+                    None,
+                    now,
+                    {"signal": direction},
+                    risk=pre_risk,
+                )
             self._require_matching_intent(
                 existing, produced, quote.epic, direction, entry, stop, target
             )
@@ -537,6 +593,7 @@ class ShadowRuntime:
         if not decision.allowed:
             return self._record(
                 cycle_id,
+                quote.epic,
                 decision.code,
                 decision.code,
                 None,
@@ -546,17 +603,48 @@ class ShadowRuntime:
             )
         if not isinstance(normalized_account, AccountSnapshot) or decision.target_pips is None:
             raise ShadowRuntimeError("approved shadow risk decision is incomplete")
-        permit = OneShotRiskPermit()
-        record = self._new_execution_core(permit.consume).create_intent(
-            produced,
-            MarketQuote(quote.bid, quote.offer, quote.timestamp),
-            intent_id=intent_id,
-            stop_price=stop,
-            target_price=target,
-            open_positions_for_strategy=active_positions,
-            daily_loss_pct=normalized_account.daily_loss_pct or 0.0,
-            now=now,
+        self.evidence.check_available(
+            self._intent_evidence(
+                cycle_id,
+                instrument=quote.epic,
+                intent_id=intent_id,
+                strategy_id=str(produced.strategy_name),
+                direction=direction,
+                entry=entry,
+                stop=stop,
+                target=target,
+                portfolio_risk_code=decision.code,
+                risk=risk_evidence,
+                lifecycle=ShadowLifecycle.SHADOW_INTENT_CREATED,
+                now=now,
+            )
         )
+        permit = OneShotRiskPermit()
+        try:
+            record = self._new_execution_core(permit.consume).create_intent(
+                produced,
+                MarketQuote(quote.bid, quote.offer, quote.timestamp),
+                intent_id=intent_id,
+                stop_price=stop,
+                target_price=target,
+                open_positions_for_strategy=active_positions,
+                daily_loss_pct=normalized_account.daily_loss_pct or 0.0,
+                now=now,
+            )
+        except ShadowExecutionError:
+            claimed = self.store.get(intent_id)
+            if claimed is None or claimed.instrument == quote.epic:
+                raise
+            return self._record(
+                cycle_id,
+                quote.epic,
+                "GLOBAL_CYCLE_ALREADY_CLAIMED",
+                decision.code,
+                None,
+                now,
+                {"signal": direction},
+                risk=risk_evidence,
+            )
         evidence = self._record_intent(
             cycle_id,
             record,
@@ -637,6 +725,7 @@ class ShadowRuntime:
     def _record(
         self,
         cycle_id: str,
+        instrument: str,
         code: str,
         portfolio_risk_code: str,
         intent_id: UUID | None,
@@ -648,10 +737,12 @@ class ShadowRuntime:
         evidence = self.evidence.record(
             ShadowCycleEvidence(
                 cycle_id=cycle_id,
+                instrument=instrument,
                 configuration_identity=self.config.shadow_configuration_hash,
                 fingerprint=_fingerprint(
                     {
                         "cycle": cycle_id,
+                        "instrument": instrument,
                         "configuration": self.config.shadow_configuration_hash,
                         "decision": code,
                         "portfolio_risk": portfolio_risk_code,
@@ -683,31 +774,65 @@ class ShadowRuntime:
             return self.evidence.record(replace(existing, observed_at=_utc(now)))
         performance = self._performance_for(record)
         return self.evidence.record(
-            ShadowCycleEvidence(
-                cycle_id=cycle_id,
-                configuration_identity=self.config.shadow_configuration_hash,
-                fingerprint=_fingerprint(
-                    {
-                        "cycle": cycle_id,
-                        "configuration": self.config.shadow_configuration_hash,
-                        "intent_id": record.intent_id,
-                        "strategy": record.strategy_id,
-                        "instrument": record.instrument,
-                        "direction": record.direction,
-                        "entry": record.entry_price,
-                        "stop": record.stop_price,
-                        "target": record.target_price,
-                        "risk": _risk_document(risk),
-                    }
-                ),
-                decision_code="SHADOW_INTENT_CREATED",
-                portfolio_risk_code=portfolio_risk_code,
+            self._intent_evidence(
+                cycle_id,
+                instrument=record.instrument,
                 intent_id=record.intent_id,
-                lifecycle=record.lifecycle,
-                observed_at=_utc(now),
+                strategy_id=record.strategy_id,
+                direction=record.direction,
+                entry=record.entry_price,
+                stop=record.stop_price,
+                target=record.target_price,
+                portfolio_risk_code=portfolio_risk_code,
                 risk=risk,
+                lifecycle=record.lifecycle,
+                now=now,
                 performance=performance,
             )
+        )
+
+    def _intent_evidence(
+        self,
+        cycle_id: str,
+        *,
+        instrument: str,
+        intent_id: UUID,
+        strategy_id: str,
+        direction: str,
+        entry: float,
+        stop: float,
+        target: float,
+        portfolio_risk_code: str,
+        risk: ShadowRiskEvidence | None,
+        lifecycle: ShadowLifecycle,
+        now: datetime,
+        performance: ShadowPerformance | None = None,
+    ) -> ShadowCycleEvidence:
+        return ShadowCycleEvidence(
+            cycle_id=cycle_id,
+            instrument=instrument,
+            configuration_identity=self.config.shadow_configuration_hash,
+            fingerprint=_fingerprint(
+                {
+                    "cycle": cycle_id,
+                    "instrument": instrument,
+                    "configuration": self.config.shadow_configuration_hash,
+                    "intent_id": intent_id,
+                    "strategy": strategy_id,
+                    "direction": direction,
+                    "entry": entry,
+                    "stop": stop,
+                    "target": target,
+                    "risk": _risk_document(risk),
+                }
+            ),
+            decision_code="SHADOW_INTENT_CREATED",
+            portfolio_risk_code=portfolio_risk_code,
+            intent_id=intent_id,
+            lifecycle=lifecycle,
+            observed_at=_utc(now),
+            risk=risk,
+            performance=performance,
         )
 
     def _record_lifecycle(
@@ -737,7 +862,8 @@ def _validate_evidence_update(
     replacement: ShadowCycleEvidence,
 ) -> None:
     if (
-        existing.configuration_identity != replacement.configuration_identity
+        existing.instrument != replacement.instrument
+        or existing.configuration_identity != replacement.configuration_identity
         or existing.fingerprint != replacement.fingerprint
         or existing.decision_code != replacement.decision_code
         or existing.portfolio_risk_code != replacement.portfolio_risk_code
