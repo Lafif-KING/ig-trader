@@ -447,10 +447,18 @@ def test_postgres_shadow_store_lifecycle_restart_and_fencing() -> None:
     assert successor.authorized is True
     closed_handoff = successor_core.close_on_quote(
         opened_handoff,
-        MarketQuote(0.8510, 0.8512, NOW),
+        MarketQuote(
+            opened_handoff.target_price,
+            opened_handoff.target_price + 0.0002,
+            NOW,
+        ),
         now=NOW,
     )
-    successor_core.reconcile(closed_handoff, now=NOW)
+    assert closed_handoff.lifecycle is ShadowLifecycle.CLOSED
+    assert closed_handoff.exit_reason == "TARGET"
+    assert closed_handoff.exit_price == opened_handoff.target_price
+    reconciled_handoff = successor_core.reconcile(closed_handoff, now=NOW)
+    assert reconciled_handoff.lifecycle is ShadowLifecycle.RECONCILED
 
     concurrent_records = (
         _record(uuid4(), successor_lease.fencing_token),
