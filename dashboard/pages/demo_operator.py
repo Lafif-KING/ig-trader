@@ -10,6 +10,7 @@ from dashboard.operator_control import controls_enabled, invoke_local_controller
 from dashboard.sources.demo_operator import (
     DemoOperatorSnapshot,
     research_instrument_rows,
+    resolution_detail,
     strategy_catalog,
 )
 
@@ -159,6 +160,13 @@ def _instrument_table_and_detail() -> None:
     st.write(f"**Preferred regime:** {strategy['preferred_regime']}")
     st.write(f"**Known weaknesses:** {strategy['weaknesses']}")
     st.write(f"**Risk considerations:** {strategy['risk_considerations']}")
+    st.write(f"**Why not trading:** {selected['Why not trading']}")
+    evidence = resolution_detail(selected_symbol)
+    if evidence and evidence.get("classification") == "AMBIGUOUS":
+        candidates = evidence.get("candidates")
+        if isinstance(candidates, list):
+            st.write("**DQ-03 top candidates (selection blocked):**")
+            st.dataframe(candidates, hide_index=True, width="stretch")
     st.write(
         "**Research results:** Local evidence is shown only when a verified artifact is available."
     )

@@ -52,3 +52,16 @@ orders, and positions are all 0.
   `COST_MODEL_INCOMPLETE`.
 - The Control Center can show local generated Strategy Lab artifacts. It has no
   promotion button; Demo and Live authority remain disabled.
+
+## DQ-03 Instrument Resolution and Data
+
+- DQ-03 is a separate, read-only resolver for the existing 26-symbol research
+  universe. It uses explicit IG search aliases, contract-type exclusions,
+  metadata fingerprints, and a fixed per-run request budget.
+- The resulting local artifacts are ignored by Git. They record broker facts
+  and bounded validation samples only; they never create a Demo execution
+  registration or change the disabled Demo/Live authority gates.
+- A small IG history sample validates broker response shape and attribution. It
+  is not broad Strategy Lab history. Until a reviewed local or external
+  dataset is supplied, research remains `DATA_NOT_AVAILABLE` and exact cost
+  models remain `COST_MODEL_INCOMPLETE`.

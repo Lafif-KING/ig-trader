@@ -28,3 +28,4 @@ trading.db
 *.sqlite-wal
 *.sqlite-shm
 artifacts/strategy_lab/
+artifacts/dq03/

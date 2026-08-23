@@ -19,6 +19,7 @@ class SessionManager:
         self.cst: str | None = None
         self.x_security_token: str | None = None
         self.account_id: str | None = None
+        self.lightstreamer_endpoint: str | None = None
         self.token_expiry: datetime | None = None
         self.http_client = HTTPClient(
             base_url=settings.ig_base_url,
@@ -50,6 +51,10 @@ class SessionManager:
             self.x_security_token = response.headers.get("X-SECURITY-TOKEN")
             data = response.json()
             self.account_id = data.get("currentAccountId")
+            endpoint = data.get("lightstreamerEndpoint")
+            self.lightstreamer_endpoint = (
+                endpoint if isinstance(endpoint, str) and endpoint else None
+            )
             self.token_expiry = datetime.now(UTC) + timedelta(
                 seconds=settings.session_timeout_seconds
             )
@@ -83,6 +88,7 @@ class SessionManager:
             self.cst = None
             self.x_security_token = None
             self.account_id = None
+            self.lightstreamer_endpoint = None
             self.token_expiry = None
             logger.info("logout_success")
             return True

@@ -23,6 +23,7 @@ def render(snapshot: StrategyLabSnapshot) -> None:
     instrument_summary = snapshot.instrument_summary or {}
     strategy_summary = snapshot.strategy_summary or {}
     dataset_status = instrument_summary.get("dataset_status", {})
+    dq03_verified = sum(item.get("classification") == "VERIFIED" for item in snapshot.dq03_metadata)
     render_summary_cards(
         (
             (
@@ -34,6 +35,11 @@ def render(snapshot: StrategyLabSnapshot) -> None:
                 "Datasets available",
                 _count(dataset_status, "available"),
                 "Local evidence only.",
+            ),
+            (
+                "DQ-03 contracts",
+                str(dq03_verified),
+                "Verified metadata is not a research dataset or trading permit.",
             ),
             (
                 "Strategies tested",
@@ -94,6 +100,13 @@ def render(snapshot: StrategyLabSnapshot) -> None:
     st.caption(
         "Champion status is research evidence only; project governance controls every promotion."
     )
+    if snapshot.dq03_metadata:
+        st.subheader("DQ-03 broker metadata")
+        st.dataframe(snapshot.dq03_metadata, hide_index=True, width="stretch")
+        st.caption(
+            "DQ-03 uses read-only IG metadata. Missing broad research data remains "
+            "DATA_NOT_AVAILABLE."
+        )
 
 
 def _filters(entries: tuple[dict[str, object], ...]) -> tuple[dict[str, object], ...]:

@@ -15,6 +15,7 @@ from typing import Any
 
 ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_SNAPSHOT_PATH = ROOT / ".runtime" / "demo_operator" / "operator_snapshot.json"
+DEFAULT_DQ03_REGISTRY_PATH = ROOT / "artifacts" / "dq03" / "instrument_registry.json"
 
 _STRATEGIES = {
     "S0": {
@@ -167,14 +168,49 @@ def strategy_catalog() -> dict[str, dict[str, str]]:
     }
 
 
-def research_instrument_rows() -> tuple[dict[str, object], ...]:
+def load_dq03_registry(path: Path = DEFAULT_DQ03_REGISTRY_PATH) -> dict[str, dict[str, object]]:
+    """Read sanitized DQ-03 evidence only; absence remains an explicit unknown."""
+
+    document = _load_json_object(path)
+    entries = document.get("instruments") if document else None
+    if not isinstance(entries, list):
+        return {}
+    result: dict[str, dict[str, object]] = {}
+    for item in entries:
+        if not isinstance(item, dict):
+            continue
+        symbol = item.get("canonical_symbol")
+        if symbol not in {value[0] for value in _INSTRUMENTS}:
+            continue
+        if _safe_dq03_entry(item):
+            result[str(symbol)] = item
+    return result
+
+
+def research_instrument_rows(
+    registry_path: Path = DEFAULT_DQ03_REGISTRY_PATH,
+) -> tuple[dict[str, object], ...]:
+    resolved = load_dq03_registry(registry_path)
     return tuple(
         {
             "Instrument": symbol,
             "Asset class": asset_class,
-            "IG EPIC": "Not discovered",
-            "Market": "Not synchronized",
-            "Spread": "Unavailable",
+            "Resolution": _resolution_value(resolved.get(symbol), "classification", "NOT_RESOLVED"),
+            "IG EPIC": _resolution_value(resolved.get(symbol), "selected_epic", "Not discovered"),
+            "Contract": _metadata_value(resolved.get(symbol), "display_name", "Not synchronized"),
+            "Market": _metadata_value(resolved.get(symbol), "market_status", "Not synchronized"),
+            "Currency": _metadata_value(resolved.get(symbol), "currency", "Unavailable"),
+            "Min size": _metadata_value(resolved.get(symbol), "minimum_deal_size", "Unavailable"),
+            "Min stop": _metadata_value(
+                resolved.get(symbol), "minimum_stop_distance", "Unavailable"
+            ),
+            "Spread": _metadata_value(resolved.get(symbol), "spread", "Unavailable"),
+            "Streaming": _metadata_value(
+                resolved.get(symbol), "streaming_prices_available", "Unknown"
+            ),
+            "Data status": _resolution_value(
+                resolved.get(symbol), "data_status", "DATA_NOT_AVAILABLE"
+            ),
             "Assigned strategy": strategy,
             "Version": _STRATEGIES[strategy]["version"],
             "Timeframe": "Research-defined",
@@ -192,9 +228,18 @@ def research_instrument_rows() -> tuple[dict[str, object], ...]:
             "Demo Net R": "Unavailable",
             "Last activity": "Not synchronized",
             "Why assigned": _why_assigned(symbol, strategy),
+            "Why not trading": _why_not_trading(resolved.get(symbol)),
         }
         for symbol, asset_class, strategy in _INSTRUMENTS
     )
+
+
+def resolution_detail(
+    symbol: str, path: Path = DEFAULT_DQ03_REGISTRY_PATH
+) -> dict[str, object] | None:
+    """Return a local evidence document for a selected dashboard instrument."""
+
+    return load_dq03_registry(path).get(symbol)
 
 
 def _safe(value: object) -> bool:
@@ -203,6 +248,54 @@ def _safe(value: object) -> bool:
     if isinstance(value, list):
         return all(_safe(item) for item in value)
     return False
+
+
+def _load_json_object(path: Path) -> dict[str, object] | None:
+    try:
+        document: Any = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+        return None
+    return document if isinstance(document, dict) else None
+
+
+def _safe_dq03_entry(item: dict[str, object]) -> bool:
+    required = {"canonical_symbol", "classification", "data_status", "metadata"}
+    if not required.issubset(item):
+        return False
+    simple = str | int | float | bool | type(None)
+    if not all(isinstance(item.get(field), simple) for field in required - {"metadata"}):
+        return False
+    return item["metadata"] is None or isinstance(item["metadata"], dict)
+
+
+def _resolution_value(entry: dict[str, object] | None, key: str, fallback: str) -> object:
+    if entry is None:
+        return fallback
+    value = entry.get(key)
+    return value if isinstance(value, str | int | float | bool) else fallback
+
+
+def _metadata_value(entry: dict[str, object] | None, key: str, fallback: str) -> object:
+    if entry is None:
+        return fallback
+    metadata = entry.get("metadata")
+    if not isinstance(metadata, dict):
+        return fallback
+    value = metadata.get(key)
+    return value if isinstance(value, str | int | float | bool) else fallback
+
+
+def _why_not_trading(entry: dict[str, object] | None) -> str:
+    if entry is None:
+        return "DQ-03 resolver evidence is not available."
+    if entry.get("classification") != "VERIFIED":
+        reasons = entry.get("selection_reasons")
+        if isinstance(reasons, list) and reasons and isinstance(reasons[0], str):
+            return reasons[0]
+        return "The broker contract could not be proven safely."
+    if entry.get("cost_model_status") == "COST_MODEL_INCOMPLETE":
+        return "Exact transaction cost model is incomplete; Demo qualification is blocked."
+    return "DQ-03 research evidence does not create a Demo execution registration."
 
 
 def _why_assigned(symbol: str, strategy: str) -> str:

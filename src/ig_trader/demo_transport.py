@@ -101,6 +101,7 @@ class IGDemoMarketDetails:
     bid: Decimal | None
     offer: Decimal | None
     observed_at: datetime
+    controlled_risk_supported: bool | None = None
 
     def to_execution_metadata(self) -> DemoMarketMetadata:
         """Project the DQ-01 validation fields without filling missing values."""
@@ -113,7 +114,7 @@ class IGDemoMarketDetails:
             decimal_places=self.decimal_places,
             minimum_deal_size=self.minimum_deal_size,
             minimum_stop_distance=self.minimum_stop_distance,
-            guaranteed_stop_supported=None,
+            guaranteed_stop_supported=self.controlled_risk_supported,
             market_status=self.market_status,
             observed_at=self.observed_at,
         )
@@ -352,6 +353,7 @@ def _market_details(document: Mapping[str, object], *, epic: str) -> IGDemoMarke
         bid=_decimal(snapshot.get("bid")),
         offer=_decimal(snapshot.get("offer")),
         observed_at=datetime.now(UTC),
+        controlled_risk_supported=_bool(instrument.get("controlledRiskAllowed")),
     )
 
 

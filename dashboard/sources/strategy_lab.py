@@ -9,6 +9,7 @@ from typing import Any
 
 ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_ARTIFACT_DIRECTORY = ROOT / "artifacts" / "strategy_lab"
+DEFAULT_DQ03_METADATA_PATH = ROOT / "artifacts" / "dq03" / "metadata_summary.json"
 
 
 @dataclass(frozen=True)
@@ -17,6 +18,7 @@ class StrategyLabSnapshot:
     entries: tuple[dict[str, object], ...] = ()
     instrument_summary: dict[str, object] | None = None
     strategy_summary: dict[str, object] | None = None
+    dq03_metadata: tuple[dict[str, object], ...] = ()
 
 
 def load_strategy_lab_snapshot(
@@ -33,6 +35,7 @@ def load_strategy_lab_snapshot(
         entries=entries,
         instrument_summary=_load_object(artifact_directory / "instrument_summary.json"),
         strategy_summary=_load_object(artifact_directory / "strategy_summary.json"),
+        dq03_metadata=_load_dq03_metadata(),
     )
 
 
@@ -59,4 +62,18 @@ def _safe_entry(value: object) -> bool:
     primitive = str | int | float | type(None)
     return required.issubset(value) and all(
         isinstance(value[field], primitive) for field in required
+    )
+
+
+def _load_dq03_metadata() -> tuple[dict[str, object], ...]:
+    document = _load_object(DEFAULT_DQ03_METADATA_PATH)
+    values = document.get("instruments") if document else None
+    if not isinstance(values, list):
+        return ()
+    return tuple(
+        item
+        for item in values
+        if isinstance(item, dict)
+        and isinstance(item.get("symbol"), str)
+        and isinstance(item.get("classification"), str)
     )
