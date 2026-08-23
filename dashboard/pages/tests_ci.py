@@ -20,7 +20,7 @@ def render(github: GitHubStatus) -> None:
     st.write(f"**Current main SHA:** `{github.main_sha or 'Not reported'}`")
     st.write(f"**Main last updated:** {github.main_updated_at or 'Not reported'}")
     if github.latest_workflow is None:
-        st.info("GitHub did not report a workflow run for the selected context.")
+        st.info(f"{github.workflow_context}: GitHub did not report a workflow run.")
     else:
         render_workflow(github.latest_workflow, github.workflow_context)
     render_pr_list("Open pull requests", github.open_pull_requests)

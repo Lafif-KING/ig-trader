@@ -126,6 +126,21 @@ def test_mocked_active_pr_ci_context_renders(monkeypatch) -> None:
     assert "Latest workflow: IN PROGRESS — ACTIVE PR #7" in rendered
 
 
+def test_active_pr_without_ci_is_clearly_unreported(monkeypatch) -> None:
+    app_test = _run_app(
+        monkeypatch,
+        "Tests & GitHub CI",
+        GitHubStatus(
+            True,
+            "f" * 40,
+            workflow_context="ACTIVE PR #7 — CI NOT YET REPORTED",
+        ),
+    )
+    assert "ACTIVE PR #7 — CI NOT YET REPORTED: GitHub did not report a workflow run." in _rendered(
+        app_test
+    )
+
+
 def test_roadmap_renders_reviewed_gate_and_no_activation_button(monkeypatch) -> None:
     app_test = _run_app(monkeypatch, "Project Roadmap")
     rendered = _rendered(app_test)

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import os
 from collections.abc import Mapping
-from typing import Any
+from typing import Any, Final
 
 import httpx
 
@@ -14,6 +14,8 @@ GITHUB_API_BASE = "https://api.github.com/repos/Lafif-KING/ig-trader"
 REQUEST_TIMEOUT_SECONDS = 8.0
 TOKEN_CACHE_TTL_SECONDS = 60
 ANONYMOUS_CACHE_TTL_SECONDS = 300
+CI_WORKFLOW_PATH: Final = ".github/workflows/ci.yaml"
+CI_WORKFLOW_NAME: Final = "Cloud foundation CI"
 
 
 def github_cache_ttl_seconds(*, has_token: bool) -> int:
@@ -93,6 +95,15 @@ def _run_pull_request_numbers(run: Mapping[str, Any]) -> set[int]:
     }
 
 
+def _is_authoritative_ci(run: Mapping[str, Any]) -> bool:
+    """Allow only the reviewed project CI workflow to affect dashboard status."""
+
+    if _safe_text(run.get("path"), limit=200) != CI_WORKFLOW_PATH:
+        return False
+    workflow_name = _safe_text(run.get("name"))
+    return workflow_name is None or workflow_name == CI_WORKFLOW_NAME
+
+
 def _select_workflow(
     payload: Any, open_pull_requests: tuple[PullRequest, ...]
 ) -> tuple[Mapping[str, Any] | None, str, PullRequest | None]:
@@ -101,7 +112,9 @@ def _select_workflow(
     runs = payload.get("workflow_runs") if isinstance(payload, Mapping) else None
     if not isinstance(runs, list):
         return None, "MAIN", None
-    mapping_runs = tuple(run for run in runs if isinstance(run, Mapping))
+    mapping_runs = tuple(
+        run for run in runs if isinstance(run, Mapping) and _is_authoritative_ci(run)
+    )
     active_matches: list[tuple[Mapping[str, Any], PullRequest]] = []
     for run in mapping_runs:
         run_pr_numbers = _run_pull_request_numbers(run)
@@ -115,6 +128,9 @@ def _select_workflow(
     if active_matches:
         run, pull_request = max(active_matches, key=lambda match: _workflow_timestamp(match[0]))
         return run, f"ACTIVE PR #{pull_request.number}", pull_request
+    if open_pull_requests:
+        pull_request = open_pull_requests[0]
+        return None, f"ACTIVE PR #{pull_request.number} — CI NOT YET REPORTED", pull_request
     main_runs = tuple(
         run for run in mapping_runs if _safe_text(run.get("head_branch"), limit=80) == "main"
     )

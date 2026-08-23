@@ -5,6 +5,8 @@ import respx
 
 from dashboard.sources.github import (
     ANONYMOUS_CACHE_TTL_SECONDS,
+    CI_WORKFLOW_NAME,
+    CI_WORKFLOW_PATH,
     GITHUB_API_BASE,
     TOKEN_CACHE_TTL_SECONDS,
     fetch_github_status,
@@ -29,10 +31,13 @@ def _run(
     head_sha: str,
     pull_request: int | None = None,
     started_at: str = "2026-08-23T10:00:00Z",
+    workflow_name: str = CI_WORKFLOW_NAME,
+    workflow_path: str = CI_WORKFLOW_PATH,
 ) -> dict[str, object]:
     return {
         "id": run_id,
-        "name": "CI",
+        "name": workflow_name,
+        "path": workflow_path,
         "run_number": run_id,
         "status": status,
         "conclusion": conclusion,
@@ -68,7 +73,42 @@ def _respond_jobs(run_id: int) -> None:
 
 
 @respx.mock
-def test_active_failed_pr_workflow_overrides_green_main() -> None:
+def test_main_selection_ignores_newer_publication_workflow() -> None:
+    _respond_common(
+        pulls=[],
+        runs=[
+            _run(
+                run_id=99,
+                status="completed",
+                conclusion="success",
+                branch="main",
+                head_sha="a" * 40,
+                started_at="2026-08-23T11:00:00Z",
+            ),
+            _run(
+                run_id=100,
+                status="completed",
+                conclusion="success",
+                branch="main",
+                head_sha="a" * 40,
+                started_at="2026-08-23T12:00:00Z",
+                workflow_name="DEV shadow immutable image publish",
+                workflow_path=".github/workflows/dev-shadow-image-publish.yaml",
+            ),
+        ],
+    )
+    _respond_jobs(99)
+
+    snapshot = fetch_github_status()
+
+    assert snapshot.workflow_context == "MAIN"
+    assert snapshot.latest_workflow is not None
+    assert snapshot.latest_workflow.name == CI_WORKFLOW_NAME
+    assert snapshot.latest_workflow.number == 99
+
+
+@respx.mock
+def test_active_pr_ci_failure_ignores_newer_publication_workflow() -> None:
     open_pr_sha = "b" * 40
     _respond_common(
         pulls=[
@@ -105,6 +145,17 @@ def test_active_failed_pr_workflow_overrides_green_main() -> None:
                 head_sha=open_pr_sha,
                 pull_request=7,
                 started_at="2026-08-23T12:00:00Z",
+            ),
+            _run(
+                run_id=101,
+                status="completed",
+                conclusion="success",
+                branch="codex/dashboard",
+                head_sha=open_pr_sha,
+                pull_request=7,
+                started_at="2026-08-23T13:00:00Z",
+                workflow_name="DEV shadow immutable image publish",
+                workflow_path=".github/workflows/dev-shadow-image-publish.yaml",
             ),
         ],
     )
@@ -198,6 +249,71 @@ def test_no_open_pr_falls_back_to_latest_main_workflow() -> None:
     assert snapshot.latest_workflow is not None
     assert snapshot.latest_workflow.display_result == "PASS"
     assert snapshot.latest_workflow.pull_request is None
+
+
+@respx.mock
+def test_active_pr_without_authoritative_ci_is_not_presented_as_main_pass() -> None:
+    open_pr_sha = "b" * 40
+    _respond_common(
+        pulls=[
+            {
+                "number": 7,
+                "title": "Public status",
+                "state": "open",
+                "head": {"sha": open_pr_sha},
+                "html_url": "https://example.test/pr/7",
+            }
+        ],
+        runs=[
+            _run(
+                run_id=99,
+                status="completed",
+                conclusion="success",
+                branch="main",
+                head_sha="a" * 40,
+            ),
+            _run(
+                run_id=100,
+                status="completed",
+                conclusion="success",
+                branch="codex/dashboard",
+                head_sha=open_pr_sha,
+                pull_request=7,
+                workflow_name="DEV shadow immutable image publish",
+                workflow_path=".github/workflows/dev-shadow-image-publish.yaml",
+            ),
+        ],
+    )
+
+    snapshot = fetch_github_status()
+
+    assert snapshot.available is True
+    assert snapshot.latest_workflow is None
+    assert snapshot.workflow_context == "ACTIVE PR #7 — CI NOT YET REPORTED"
+
+
+@respx.mock
+def test_only_non_authoritative_workflows_leave_project_ci_unreported() -> None:
+    _respond_common(
+        pulls=[],
+        runs=[
+            _run(
+                run_id=100,
+                status="completed",
+                conclusion="success",
+                branch="main",
+                head_sha="a" * 40,
+                workflow_name="DEV shadow immutable image publish",
+                workflow_path=".github/workflows/dev-shadow-image-publish.yaml",
+            )
+        ],
+    )
+
+    snapshot = fetch_github_status()
+
+    assert snapshot.available is True
+    assert snapshot.latest_workflow is None
+    assert snapshot.workflow_context == "MAIN"
 
 
 @respx.mock
