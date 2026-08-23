@@ -734,30 +734,42 @@ class ShadowRuntime:
         *,
         risk: ShadowRiskEvidence | None = None,
     ) -> ShadowRuntimeResult:
-        evidence = self.evidence.record(
-            ShadowCycleEvidence(
-                cycle_id=cycle_id,
-                instrument=instrument,
-                configuration_identity=self.config.shadow_configuration_hash,
-                fingerprint=_fingerprint(
-                    {
-                        "cycle": cycle_id,
-                        "instrument": instrument,
-                        "configuration": self.config.shadow_configuration_hash,
-                        "decision": code,
-                        "portfolio_risk": portfolio_risk_code,
-                        "details": details,
-                        "risk": _risk_document(risk),
-                    }
-                ),
-                decision_code=code,
-                portfolio_risk_code=portfolio_risk_code,
-                intent_id=intent_id,
-                lifecycle=None,
-                observed_at=_utc(now),
-                risk=risk,
-            )
+        candidate = ShadowCycleEvidence(
+            cycle_id=cycle_id,
+            instrument=instrument,
+            configuration_identity=self.config.shadow_configuration_hash,
+            fingerprint=_fingerprint(
+                {
+                    "cycle": cycle_id,
+                    "instrument": instrument,
+                    "configuration": self.config.shadow_configuration_hash,
+                    "decision": code,
+                    "portfolio_risk": portfolio_risk_code,
+                    "details": _stable_non_intent_facts(details),
+                    "risk": _risk_document(risk),
+                }
+            ),
+            decision_code=code,
+            portfolio_risk_code=portfolio_risk_code,
+            intent_id=intent_id,
+            lifecycle=None,
+            observed_at=_utc(now),
+            risk=risk,
         )
+        if code == "WARMUP_INCOMPLETE":
+            existing = next(
+                (
+                    evidence
+                    for evidence in self.evidence.for_cycle(cycle_id)
+                    if evidence.instrument == instrument
+                ),
+                None,
+            )
+            if existing is not None and existing.intent_id is not None:
+                # A restart must not overwrite durable intent evidence with a
+                # process-local warm-up replay of that historical candle.
+                return ShadowRuntimeResult(cycle_id, code, None, existing)
+        evidence = self.evidence.record(candidate)
         return ShadowRuntimeResult(cycle_id, code, None, evidence)
 
     def _record_intent(
@@ -1032,6 +1044,12 @@ def _risk_evidence(
 
 def _risk_document(risk: ShadowRiskEvidence | None) -> Mapping[str, object] | None:
     return asdict(risk) if risk is not None else None
+
+
+def _stable_non_intent_facts(details: Mapping[str, object]) -> Mapping[str, object]:
+    """Return business facts, never process-local buffer or replay telemetry."""
+
+    return {key: details[key] for key in ("signal",) if key in details}
 
 
 def _deny_risk_gate(*_args: object, **_kwargs: object) -> bool:

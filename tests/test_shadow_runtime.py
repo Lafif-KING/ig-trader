@@ -505,6 +505,71 @@ def test_same_instrument_evidence_conflict_blocks_intent_before_store_mutation(
     assert evidence.for_cycle(waiting.cycle_id) == (waiting.evidence,)
 
 
+def test_warmup_evidence_replay_ignores_buffer_count_but_rejects_semantic_change() -> None:
+    evidence = InMemoryShadowEvidenceStore()
+    original = runtime(InMemoryShadowStore(7), evidence)
+    final_candle_at = NOW - timedelta(minutes=2)
+    original_result = original.evaluate_cycle(
+        quote=quote(),
+        candle=candle(0, timestamp=final_candle_at),
+        account=account(),
+        now=NOW,
+    )
+
+    restarted = runtime(InMemoryShadowStore(7), evidence)
+    restarted.evaluate_cycle(
+        quote=quote(),
+        candle=candle(0, timestamp=final_candle_at - timedelta(minutes=1)),
+        account=account(),
+        now=NOW,
+    )
+    replayed_result = restarted.evaluate_cycle(
+        quote=quote(),
+        candle=candle(1, timestamp=final_candle_at),
+        account=account(),
+        now=NOW,
+    )
+
+    assert original_result.decision_code == replayed_result.decision_code == "WARMUP_INCOMPLETE"
+    assert len(original._candles.snapshot(EPIC)) == 1
+    assert len(restarted._candles.snapshot(EPIC)) == 2
+    assert replayed_result.evidence == original_result.evidence
+    assert evidence.for_cycle(original_result.cycle_id) == (original_result.evidence,)
+    with pytest.raises(ShadowRuntimeError, match="identity conflicts"):
+        evidence.record(replace(replayed_result.evidence, decision_code="S0_WAIT"))
+
+
+def test_restarted_overlapping_warmup_preserves_open_intent_evidence(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    store = InMemoryShadowStore(7)
+    evidence = InMemoryShadowEvidenceStore()
+    original = runtime(store, evidence)
+    created_result = warm(original, monkeypatch)
+    created = created_result.intent
+    assert created is not None
+    opened = original.advance(created.intent_id, quote(), now=NOW)
+    assert opened.lifecycle is ShadowLifecycle.OPEN
+
+    restarted = runtime(store, evidence)
+    limited = warm(restarted, monkeypatch, now=NOW + timedelta(minutes=1))
+
+    assert limited.intent is None
+    assert limited.decision_code == "TOTAL_POSITION_LIMIT"
+    assert limited.evidence.portfolio_risk_code == "TOTAL_POSITION_LIMIT"
+    assert (
+        limited.evidence.risk is not None and limited.evidence.risk.code == "TOTAL_POSITION_LIMIT"
+    )
+    assert store.get(created.intent_id).lifecycle is ShadowLifecycle.OPEN
+    assert evidence.by_intent(created.intent_id).lifecycle is ShadowLifecycle.OPEN
+    assert limited.evidence in evidence.for_cycle(limited.cycle_id)
+    assert len(store.records) == 1
+    assert restarted.lease.authorized is True
+    assert restarted.authorized is False
+    assert restarted.order_authority is False
+    assert restarted.broker_order_call_count == 0
+
+
 def test_global_cycle_identity_is_internal_and_instrument_neutral() -> None:
     timestamp = NOW - timedelta(minutes=2)
     configuration = FrozenV1Config().shadow_configuration_hash
@@ -1314,7 +1379,27 @@ def test_postgres_shadow_runtime_lifecycle_and_restart(monkeypatch: pytest.Monke
         monkeypatch,
         now=NOW + timedelta(minutes=1),
     )
-    assert limited.intent is None and limited.decision_code == "TOTAL_POSITION_LIMIT"
+    assert limited.intent is None
+    assert limited.decision_code == "TOTAL_POSITION_LIMIT"
+    assert limited.evidence.portfolio_risk_code == "TOTAL_POSITION_LIMIT"
+    assert (
+        limited.evidence.risk is not None and limited.evidence.risk.code == "TOTAL_POSITION_LIMIT"
+    )
+    assert successor_store.get(created.intent_id).lifecycle is ShadowLifecycle.OPEN
+    assert evidence.by_intent(created.intent_id).lifecycle is ShadowLifecycle.OPEN
+    assert limited.evidence in evidence.for_cycle(limited.cycle_id)
+    assert successor.authorized is True
+    assert restarted.authorized is False
+    assert restarted.order_authority is False
+    assert restarted.broker_order_call_count == 0
+    with connection_factory() as connection:
+        assert (
+            connection.execute(
+                "SELECT count(*) FROM trading.trade_intents WHERE intent_id = %s",
+                (created.intent_id,),
+            ).fetchone()[0]
+            == 1
+        )
     closed = restarted.advance(
         created.intent_id,
         quote(bid=0.8514, offer=0.8515),
