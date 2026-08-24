@@ -8,7 +8,6 @@ from datetime import UTC, datetime
 from decimal import Decimal
 from pathlib import Path
 from time import monotonic
-from typing import Any
 
 from src.ig_trader.sl02.artifacts import write_sl02_artifacts
 from src.ig_trader.sl02.contracts import AcquiredDataset, AlignmentResult, BrokerEvidence
@@ -19,6 +18,7 @@ from src.ig_trader.sl02.evidence import (
     write_preflight_report,
 )
 from src.ig_trader.sl02.history import ExternalHistoryUnavailable, YahooFinanceHistorySource
+from src.ig_trader.strategy_lab.data import DataContractError
 from src.ig_trader.strategy_lab.engine import (
     CandleBacktestEngine,
     PerformanceMetrics,
@@ -29,7 +29,6 @@ from src.ig_trader.strategy_lab.engine import (
     classify_result,
     walk_forward_windows,
 )
-from src.ig_trader.strategy_lab.data import DataContractError
 from src.ig_trader.strategy_lab.models import (
     INITIAL_INSTRUMENT_REGISTRY,
     AssetClass,
@@ -39,7 +38,11 @@ from src.ig_trader.strategy_lab.models import (
     is_timeframe_compatible,
     suitable_families,
 )
-from src.ig_trader.strategy_lab.strategies import RuleStrategy, bounded_parameter_variants, strategy_registry
+from src.ig_trader.strategy_lab.strategies import (
+    RuleStrategy,
+    bounded_parameter_variants,
+    strategy_registry,
+)
 
 ROOT = Path(__file__).resolve().parents[3]
 DEFAULT_ARTIFACT_DIRECTORY = ROOT / "artifacts" / "strategy_lab"
@@ -154,10 +157,14 @@ class SL02Runner:
             raise SL02BrokerEvidenceRequired(preflight_path)
         broker_evidence = preflight.evidence
         cost_evidence = load_cost_evidence(self.cost_evidence_path)
-        specifications = {symbol: INITIAL_INSTRUMENT_REGISTRY[symbol] for symbol in SL02_VERIFIED_SYMBOLS}
+        specifications = {
+            symbol: INITIAL_INSTRUMENT_REGISTRY[symbol] for symbol in SL02_VERIFIED_SYMBOLS
+        }
         planned = self._planned_combinations(specifications)
         datasets, acquisition_errors = self._acquire(planned)
-        manifest = self._dataset_manifest(specifications, datasets, acquisition_errors, broker_evidence)
+        manifest = self._dataset_manifest(
+            specifications, datasets, acquisition_errors, broker_evidence
+        )
 
         evaluations: list[_Evaluation] = []
         simulated = 0
@@ -166,22 +173,35 @@ class SL02Runner:
             dataset = datasets.get((symbol, timeframe))
             broker = broker_evidence.get(symbol)
             alignment = (
-                compare_with_broker_sample(dataset.dataset, broker)
-                if dataset is not None
-                else None
+                compare_with_broker_sample(dataset.dataset, broker) if dataset is not None else None
             )
             blocked_status, reason = _blocked_status(
-                dataset, acquisition_errors.get((symbol, timeframe)), alignment, broker, cost_evidence.get(symbol)
+                dataset,
+                acquisition_errors.get((symbol, timeframe)),
+                alignment,
+                broker,
+                cost_evidence.get(symbol),
             )
             strategy = self.strategies[strategy_id]
             if blocked_status is not None:
                 evaluations.append(
                     _Evaluation(
                         _blocked_entry(
-                            specifications[symbol], strategy, timeframe, dataset, broker, alignment, blocked_status, reason
+                            specifications[symbol],
+                            strategy,
+                            timeframe,
+                            dataset,
+                            broker,
+                            alignment,
+                            blocked_status,
+                            reason,
                         ),
-                        _blocked_walk_forward(symbol, strategy_id, timeframe, blocked_status, reason),
-                        _blocked_stress_test(symbol, strategy_id, timeframe, blocked_status, reason),
+                        _blocked_walk_forward(
+                            symbol, strategy_id, timeframe, blocked_status, reason
+                        ),
+                        _blocked_stress_test(
+                            symbol, strategy_id, timeframe, blocked_status, reason
+                        ),
                         (),
                         (),
                     )
@@ -189,7 +209,13 @@ class SL02Runner:
                 continue
             assert dataset is not None
             evaluation = self._evaluate(
-                specifications[symbol], strategy, timeframe, dataset, broker, cost_evidence[symbol], alignment
+                specifications[symbol],
+                strategy,
+                timeframe,
+                dataset,
+                broker,
+                cost_evidence[symbol],
+                alignment,
             )
             evaluations.append(evaluation)
             simulated += 1
@@ -352,17 +378,38 @@ class SL02Runner:
         assert base_friction is not None
         splits = chronological_splits(acquired.dataset)
         variants = bounded_parameter_variants(strategy)
-        development = {item.definition.configuration_fingerprint: self.engine.run(splits.development, item, base_friction) for item in variants}
-        validation = {item.definition.configuration_fingerprint: self.engine.run(splits.validation, item, base_friction) for item in variants}
-        selected = variants[0] if strategy.definition.baseline_only else max(
-            variants,
-            key=lambda item: _expectancy(validation[item.definition.configuration_fingerprint].metrics),
+        _ = {
+            item.definition.configuration_fingerprint: self.engine.run(
+                splits.development, item, base_friction
+            )
+            for item in variants
+        }
+        validation = {
+            item.definition.configuration_fingerprint: self.engine.run(
+                splits.validation, item, base_friction
+            )
+            for item in variants
+        }
+        selected = (
+            variants[0]
+            if strategy.definition.baseline_only
+            else max(
+                variants,
+                key=lambda item: _expectancy(
+                    validation[item.definition.configuration_fingerprint].metrics
+                ),
+            )
         )
-        selected_development = development[selected.definition.configuration_fingerprint]
         selected_validation = validation[selected.definition.configuration_fingerprint]
         test_result = self.engine.run(splits.untouched_test, selected, base_friction)
-        peak_risk = _isolated_validation_peak(validation.values()) if not strategy.definition.baseline_only else False
-        walk_document, walk_metrics = self._walk_forward(acquired.dataset, variants, selected, base_friction)
+        peak_risk = (
+            _isolated_validation_peak(validation.values())
+            if not strategy.definition.baseline_only
+            else False
+        )
+        walk_document, walk_metrics = self._walk_forward(
+            acquired.dataset, variants, selected, base_friction
+        )
         stress_document, stress_passed = self._stress(splits.untouched_test, selected, broker, cost)
         classification = classify_result(
             test_result,
@@ -370,12 +417,16 @@ class SL02Runner:
             out_of_sample=walk_metrics,
             overfit_risk=peak_risk,
         )
-        if classification not in {
-            QualificationStatus.INSUFFICIENT_TRADES,
-            QualificationStatus.LOW_SAMPLE_CONFIDENCE,
-            QualificationStatus.NEGATIVE_EXPECTANCY,
-            QualificationStatus.OVERFIT_RISK,
-        } and not stress_passed:
+        if (
+            classification
+            not in {
+                QualificationStatus.INSUFFICIENT_TRADES,
+                QualificationStatus.LOW_SAMPLE_CONFIDENCE,
+                QualificationStatus.NEGATIVE_EXPECTANCY,
+                QualificationStatus.OVERFIT_RISK,
+            }
+            and not stress_passed
+        ):
             classification = QualificationStatus.STRESS_TEST_FAIL
         if acquired.depth_status.value == "LOW_DATA_DEPTH":
             classification = QualificationStatus.LOW_DATA_DEPTH
@@ -394,7 +445,10 @@ class SL02Runner:
             selected_validation.metrics,
             walk_metrics,
             len(variants),
-            "Selected only from chronological validation expectancy; test was not used for selection.",
+            (
+                "Selected only from chronological validation expectancy; "
+                "test was not used for selection."
+            ),
             stress_passed,
             [
                 classification.value,
@@ -427,10 +481,15 @@ class SL02Runner:
             walk_document,
             stress_document,
             tuple(trade.r_multiple for trade in test_result.trades),
-            tuple((trade.entry_timestamp_utc, trade.exit_timestamp_utc) for trade in test_result.trades),
+            tuple(
+                (trade.entry_timestamp_utc, trade.exit_timestamp_utc)
+                for trade in test_result.trades
+            ),
         )
 
-    def _walk_forward(self, dataset, variants, selected, friction) -> tuple[dict[str, object], PerformanceMetrics | None]:
+    def _walk_forward(
+        self, dataset, variants, selected, friction
+    ) -> tuple[dict[str, object], PerformanceMetrics | None]:
         total = len(dataset.candles)
         development_size = max(60, int(total * 0.40))
         validation_size = max(30, int(total * 0.20))
@@ -446,8 +505,18 @@ class SL02Runner:
             if selected.definition.baseline_only:
                 chosen = selected
             else:
-                development = {item.definition.configuration_fingerprint: self.engine.run(window.development, item, friction) for item in variants}
-                chosen = max(variants, key=lambda item: _expectancy(development[item.definition.configuration_fingerprint].metrics))
+                development = {
+                    item.definition.configuration_fingerprint: self.engine.run(
+                        window.development, item, friction
+                    )
+                    for item in variants
+                }
+                chosen = max(
+                    variants,
+                    key=lambda item: _expectancy(
+                        development[item.definition.configuration_fingerprint].metrics
+                    ),
+                )
             result = self.engine.run(window.validation, chosen, friction)
             all_trades.extend(result.trades)
             rows.append(
@@ -508,17 +577,29 @@ def _blocked_status(
     cost,
 ) -> tuple[QualificationStatus | None, str | None]:
     if dataset is None:
-        return QualificationStatus.DATA_NOT_AVAILABLE, acquisition_error or "Dataset was not acquired."
+        return (
+            QualificationStatus.DATA_NOT_AVAILABLE,
+            acquisition_error or "Dataset was not acquired.",
+        )
     if alignment is not None and alignment.status.value == "MATERIAL_SOURCE_DIVERGENCE":
         return QualificationStatus.SOURCE_DIVERGENCE, alignment.reason
     if dataset.dataset.has_quality_failure:
-        return QualificationStatus.DATA_QUALITY_FAIL, "Dataset contains explicitly detected missing-data gaps."
+        return (
+            QualificationStatus.DATA_QUALITY_FAIL,
+            "Dataset contains explicitly detected missing-data gaps.",
+        )
     if dataset.depth_status.value == "LOW_DATA_DEPTH":
-        return QualificationStatus.LOW_DATA_DEPTH, "Dataset does not meet the reviewed timeframe depth target."
+        return (
+            QualificationStatus.LOW_DATA_DEPTH,
+            "Dataset does not meet the reviewed timeframe depth target.",
+        )
     if friction_model(broker, cost, stress_multiplier=Decimal("1")) is None:
         return (
             QualificationStatus.COST_MODEL_INCOMPLETE,
-            "DQ-03 metadata and matching reviewed slippage/commission/session cost evidence are required.",
+            (
+                "DQ-03 metadata and matching reviewed slippage/commission/session "
+                "cost evidence are required."
+            ),
         )
     return None, None
 
@@ -667,7 +748,11 @@ def _metrics_document(metrics: PerformanceMetrics | None) -> dict[str, object]:
 
 
 def _blocked_walk_forward(
-    symbol: str, strategy: str, timeframe: Timeframe, status: QualificationStatus, reason: str | None
+    symbol: str,
+    strategy: str,
+    timeframe: Timeframe,
+    status: QualificationStatus,
+    reason: str | None,
 ) -> dict[str, object]:
     return {
         "instrument": symbol,
@@ -681,7 +766,11 @@ def _blocked_walk_forward(
 
 
 def _blocked_stress_test(
-    symbol: str, strategy: str, timeframe: Timeframe, status: QualificationStatus, reason: str | None
+    symbol: str,
+    strategy: str,
+    timeframe: Timeframe,
+    status: QualificationStatus,
+    reason: str | None,
 ) -> dict[str, object]:
     return {
         "instrument": symbol,
@@ -711,11 +800,27 @@ def _rank_candidates(entries: list[dict[str, object]]) -> None:
         QualificationStatus.READY_FOR_DEMO_QUALIFICATION.value,
     }
     for symbol in SL02_VERIFIED_SYMBOLS:
-        candidates = [entry for entry in entries if entry["instrument"] == symbol and entry["classification"] in eligible]
-        ranked = sorted(candidates, key=lambda item: (_decimal_or_low(item["oos_expectancy"]), _decimal_or_low(item["expectancy"])), reverse=True)
+        candidates = [
+            entry
+            for entry in entries
+            if entry["instrument"] == symbol and entry["classification"] in eligible
+        ]
+        ranked = sorted(
+            candidates,
+            key=lambda item: (
+                _decimal_or_low(item["oos_expectancy"]),
+                _decimal_or_low(item["expectancy"]),
+            ),
+            reverse=True,
+        )
         for number, entry in enumerate(ranked, start=1):
-            entry["champion_challenger_rank"] = "CHAMPION_CANDIDATE" if number == 1 else f"CHALLENGER_{number - 1}"
-            if number > 1 and entry["classification"] == QualificationStatus.CHAMPION_CANDIDATE.value:
+            entry["champion_challenger_rank"] = (
+                "CHAMPION_CANDIDATE" if number == 1 else f"CHALLENGER_{number - 1}"
+            )
+            if (
+                number > 1
+                and entry["classification"] == QualificationStatus.CHAMPION_CANDIDATE.value
+            ):
                 entry["classification"] = QualificationStatus.CHALLENGER.value
 
 
@@ -769,9 +874,13 @@ def _decimal_or_low(value: object) -> Decimal:
     return value if isinstance(value, Decimal) else Decimal("-Infinity")
 
 
-def _portfolio_document(evaluations: list[_Evaluation], specifications: dict[str, InstrumentSpec]) -> dict[str, object]:
+def _portfolio_document(
+    evaluations: list[_Evaluation], specifications: dict[str, InstrumentSpec]
+) -> dict[str, object]:
     named_returns = {
-        f"{item.entry['instrument']}-{item.entry['strategy']}-{item.entry['timeframe']}": item.returns
+        (
+            f"{item.entry['instrument']}-{item.entry['strategy']}-{item.entry['timeframe']}"
+        ): item.returns
         for item in evaluations
         if item.returns
     }
@@ -801,7 +910,9 @@ def _portfolio_document(evaluations: list[_Evaluation], specifications: dict[str
         "diversification_score": analysis.diversification_score,
         "strategy_family_concentration": family_counts,
         "trade_time_overlap": _trade_time_overlap(evaluations),
-        "session_concentration": "See per-result metric_breakdown.session; no portfolio claim is made from missing rows.",
+        "session_concentration": (
+            "See per-result metric_breakdown.session; no portfolio claim is made from missing rows."
+        ),
         "diversified_shortlist": [],
     }
 
@@ -811,7 +922,10 @@ def _trade_time_overlap(evaluations: list[_Evaluation]) -> dict[str, int]:
     populated = [item for item in evaluations if item.intervals]
     for index, left in enumerate(populated):
         for right in populated[index + 1 :]:
-            key = f"{left.entry['instrument']}-{left.entry['strategy']}|{right.entry['instrument']}-{right.entry['strategy']}"
+            key = (
+                f"{left.entry['instrument']}-{left.entry['strategy']}|"
+                f"{right.entry['instrument']}-{right.entry['strategy']}"
+            )
             result[key] = sum(
                 max(start_a, start_b) < min(end_a, end_b)
                 for start_a, end_a in left.intervals
@@ -827,5 +941,7 @@ def _safety_document() -> dict[str, object]:
         "live_calls": 0,
         "execution_authority": "OFF",
         "broker_order_mutation_available": False,
-        "external_history_requests": "GET-only public provider requests; no IG endpoint is constructed.",
+        "external_history_requests": (
+            "GET-only public provider requests; no IG endpoint is constructed."
+        ),
     }

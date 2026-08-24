@@ -138,7 +138,9 @@ class RuleStrategy:
             displacement_multiple = _float_parameter(parameters, "displacement", 1.0)
             swing_high = max(float(candle.high) for candle in previous[-lookback:])
             swing_low = min(float(candle.low) for candle in previous[-lookback:])
-            displacement = abs(float(latest.close) - float(latest.open)) >= atr * displacement_multiple
+            displacement = (
+                abs(float(latest.close) - float(latest.open)) >= atr * displacement_multiple
+            )
             if displacement and float(latest.close) > swing_high:
                 return _signal(Direction.LONG, atr, "rule-based break of structure")
             if displacement and float(latest.close) < swing_low:

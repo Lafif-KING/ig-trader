@@ -58,7 +58,9 @@ def generate_research_cost_model(
                         "indices, and spot gold and silver use an all-in dealing spread "
                         "rather than a separate commission."
                     ),
-                    "applies_when": "DQ-03 classifies the contract as FX, METAL, or INDEX with expiry '-'.",
+                    "applies_when": (
+                        "DQ-03 classifies the contract as FX, METAL, or INDEX with expiry '-'."
+                    ),
                 },
                 "allowed_utc_hours": list(_RESEARCH_ALLOWED_UTC_HOURS),
                 "evidence_basis": (
@@ -74,9 +76,13 @@ def generate_research_cost_model(
         "execution_authority": "OFF",
         "model_status": "RESEARCH_ONLY",
         "generation_policy": {
-            "spread": "max(DQ-03 75th-percentile observed close spread, DQ-03 metadata spread snapshot)",
+            "spread": (
+                "max(DQ-03 75th-percentile observed close spread, DQ-03 metadata spread snapshot)"
+            ),
             "slippage": "max(DQ-03 pip/tick size, 25% of selected base spread)",
-            "commission": "zero only for documented DQ-03 cash FX, cash index, and spot metal contracts",
+            "commission": (
+                "zero only for documented DQ-03 cash FX, cash index, and spot metal contracts"
+            ),
             "session_hours": "All UTC hours; no session filter is inferred from performance.",
             "stress_scenarios": ["base", "+25% friction", "+50% friction"],
             "commission_documentation": IG_CASH_MARKET_COMMISSION_SOURCE,
@@ -86,7 +92,8 @@ def generate_research_cost_model(
     }
     output_path.parent.mkdir(parents=True, exist_ok=True)
     output_path.write_text(
-        json.dumps(document, sort_keys=True, indent=2, default=_json_default) + "\n", encoding="utf-8"
+        json.dumps(document, sort_keys=True, indent=2, default=_json_default) + "\n",
+        encoding="utf-8",
     )
     return document
 
@@ -129,7 +136,9 @@ def cost_evidence_preflight(
         "cost_entries_valid": valid_count,
         "fingerprint_mismatches": sorted(mismatches),
         "missing_cost_inputs": missing,
-        "status": "COST_EVIDENCE_COMPLETE" if valid_count == len(expected) else "COST_MODEL_INCOMPLETE",
+        "status": "COST_EVIDENCE_COMPLETE"
+        if valid_count == len(expected)
+        else "COST_MODEL_INCOMPLETE",
     }
 
 
@@ -212,7 +221,10 @@ def _parse(value: object) -> CostEvidence | None:
         or not isinstance(basis, str)
         or not basis.strip()
         or not isinstance(hours, list)
-        or not all(isinstance(hour, int) and not isinstance(hour, bool) and 0 <= hour <= 23 for hour in hours)
+        or not all(
+            isinstance(hour, int) and not isinstance(hour, bool) and 0 <= hour <= 23
+            for hour in hours
+        )
         or not hours
     ):
         return None
@@ -258,7 +270,11 @@ def _valid_commission_evidence(value: object) -> bool:
 
 
 def _valid_fingerprint(value: object) -> bool:
-    return isinstance(value, str) and len(value) == 64 and all(char in "0123456789abcdef" for char in value.lower())
+    return (
+        isinstance(value, str)
+        and len(value) == 64
+        and all(char in "0123456789abcdef" for char in value.lower())
+    )
 
 
 def _decimal(value: object) -> Decimal | None:

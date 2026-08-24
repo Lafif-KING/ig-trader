@@ -13,14 +13,16 @@ from src.ig_trader.sl02.runner import (
     DEFAULT_CACHE_DIRECTORY,
     DEFAULT_COST_EVIDENCE_PATH,
     DEFAULT_DQ03_DIRECTORY,
+    SL02_VERIFIED_SYMBOLS,
     SL02BrokerEvidenceRequired,
     SL02Runner,
-    SL02_VERIFIED_SYMBOLS,
 )
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="SL-02 broad strategy qualification (research only)")
+    parser = argparse.ArgumentParser(
+        description="SL-02 broad strategy qualification (research only)"
+    )
     parser.add_argument("command", choices=("evidence-preflight", "generate-cost-model", "run"))
     parser.add_argument("--artifact-directory", type=Path, default=DEFAULT_ARTIFACT_DIRECTORY)
     parser.add_argument("--cache-directory", type=Path, default=DEFAULT_CACHE_DIRECTORY)
@@ -45,13 +47,21 @@ def main(argv: list[str] | None = None) -> int:
         arguments.artifact_directory / "sl02_evidence_preflight.json", report
     )
     if arguments.command == "evidence-preflight":
-        print(json.dumps({"classification": report["status"], "report_path": str(report_path)}, sort_keys=True))
+        print(
+            json.dumps(
+                {"classification": report["status"], "report_path": str(report_path)},
+                sort_keys=True,
+            )
+        )
         return 0 if preflight.broker_ready else 2
     if arguments.command == "generate-cost-model":
         if not preflight.broker_ready:
             print(
                 json.dumps(
-                    {"classification": "SL02_BROKER_EVIDENCE_REQUIRED", "report_path": str(report_path)},
+                    {
+                        "classification": "SL02_BROKER_EVIDENCE_REQUIRED",
+                        "report_path": str(report_path),
+                    },
                     sort_keys=True,
                 )
             )
@@ -95,7 +105,10 @@ def main(argv: list[str] | None = None) -> int:
     except SL02BrokerEvidenceRequired as error:
         print(
             json.dumps(
-                {"classification": "SL02_BROKER_EVIDENCE_REQUIRED", "report_path": str(error.report_path)},
+                {
+                    "classification": "SL02_BROKER_EVIDENCE_REQUIRED",
+                    "report_path": str(error.report_path),
+                },
                 sort_keys=True,
             )
         )

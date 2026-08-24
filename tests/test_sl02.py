@@ -10,8 +10,16 @@ from pathlib import Path
 import pytest
 
 from src.ig_trader.sl02.contracts import AcquiredDataset, DatasetDepthStatus
-from src.ig_trader.sl02.costs import generate_research_cost_model, friction_model, load_cost_evidence
-from src.ig_trader.sl02.evidence import compare_with_broker_sample, load_dq03_evidence, preflight_dq03_evidence
+from src.ig_trader.sl02.costs import (
+    friction_model,
+    generate_research_cost_model,
+    load_cost_evidence,
+)
+from src.ig_trader.sl02.evidence import (
+    compare_with_broker_sample,
+    load_dq03_evidence,
+    preflight_dq03_evidence,
+)
 from src.ig_trader.sl02.runner import SL02BrokerEvidenceRequired, SL02Runner
 from src.ig_trader.strategy_lab.data import (
     GapClassification,
@@ -77,7 +85,9 @@ def test_bounded_challenger_grids_are_small_and_s0_is_immutable() -> None:
     assert len({item.definition.configuration_fingerprint for item in variants}) == 3
 
 
-def test_dq03_evidence_alignment_and_cost_model_require_matching_fingerprint(tmp_path: Path) -> None:
+def test_dq03_evidence_alignment_and_cost_model_require_matching_fingerprint(
+    tmp_path: Path,
+) -> None:
     timestamp = datetime(2026, 1, 5, tzinfo=UTC)
     fingerprint = "b" * 64
     (tmp_path / "instrument_registry.json").write_text(
@@ -112,7 +122,7 @@ def test_dq03_evidence_alignment_and_cost_model_require_matching_fingerprint(tmp
                                     "close_mid": "1.1000",
                                     "close_spread": "0.0002",
                                 }
-                            ]
+                            ],
                         },
                     }
                 ]
@@ -174,10 +184,16 @@ def test_dq03_evidence_alignment_and_cost_model_require_matching_fingerprint(tmp
     )
     alignment = compare_with_broker_sample(matching, evidence)
     assert alignment.status.value == "ALIGNED_WITH_IG"
-    assert friction_model(evidence, load_cost_evidence(tmp_path / "cost.json")["EURUSD"], stress_multiplier=Decimal("1")).complete
+    assert friction_model(
+        evidence,
+        load_cost_evidence(tmp_path / "cost.json")["EURUSD"],
+        stress_multiplier=Decimal("1"),
+    ).complete
 
 
-def test_sl02_runner_writes_full_artifact_set_and_blocks_missing_cost_evidence(tmp_path: Path) -> None:
+def test_sl02_runner_writes_full_artifact_set_and_blocks_missing_cost_evidence(
+    tmp_path: Path,
+) -> None:
     runner = SL02Runner(
         artifact_directory=tmp_path / "artifacts",
         cache_directory=tmp_path / "cache",

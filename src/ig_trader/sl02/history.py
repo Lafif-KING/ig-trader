@@ -14,11 +14,11 @@ from urllib.parse import urlencode
 
 from src.ig_trader.sl02.contracts import AcquiredDataset, DatasetDepthStatus
 from src.ig_trader.strategy_lab.data import (
+    TIMEFRAME_INTERVALS,
     DataContractError,
     GapClassification,
     LabCandle,
     SourceQuality,
-    TIMEFRAME_INTERVALS,
     build_dataset,
 )
 from src.ig_trader.strategy_lab.models import Timeframe
@@ -89,7 +89,9 @@ class YahooFinanceHistorySource:
                 _depth_status(dataset),
             )
         if timeframe not in _API_INTERVALS:
-            raise ExternalHistoryUnavailable(f"{timeframe.value} is intentionally not scheduled in SL-02.")
+            raise ExternalHistoryUnavailable(
+                f"{timeframe.value} is intentionally not scheduled in SL-02."
+            )
         path = self.cache_directory / _cache_name(symbol, timeframe)
         cached = self._read_cache(path)
         if cached is not None:
@@ -118,7 +120,13 @@ class YahooFinanceHistorySource:
         ticker = YAHOO_SYMBOLS[symbol]
         url = CHART_URL.format(ticker=ticker)
         try:
-            source_url = f"{url}?{urlencode({'interval': _API_INTERVALS[timeframe], 'range': _API_RANGES[timeframe]})}"
+            query = urlencode(
+                {
+                    "interval": _API_INTERVALS[timeframe],
+                    "range": _API_RANGES[timeframe],
+                }
+            )
+            source_url = f"{url}?{query}"
             response = subprocess.run(
                 [
                     "curl.exe",
@@ -140,9 +148,13 @@ class YahooFinanceHistorySource:
                 raise ExternalHistoryUnavailable(message or f"curl exited {response.returncode}")
             payload = json.loads(response.stdout.decode("utf-8"))
         except (OSError, UnicodeDecodeError, ValueError, subprocess.TimeoutExpired) as error:
-            raise ExternalHistoryUnavailable(f"{symbol} {timeframe.value} download failed: {error}") from error
+            raise ExternalHistoryUnavailable(
+                f"{symbol} {timeframe.value} download failed: {error}"
+            ) from error
         if not isinstance(payload, dict):
-            raise ExternalHistoryUnavailable(f"{symbol} {timeframe.value} source response is not an object.")
+            raise ExternalHistoryUnavailable(
+                f"{symbol} {timeframe.value} source response is not an object."
+            )
         return payload, source_url
 
     def _read_cache(self, path: Path) -> tuple[dict[str, Any], datetime, str] | None:
@@ -189,25 +201,36 @@ def _candles_from_payload(
     results = chart.get("result") if isinstance(chart, dict) else None
     if not isinstance(results, list) or len(results) != 1 or not isinstance(results[0], dict):
         error = chart.get("error") if isinstance(chart, dict) else None
-        raise ExternalHistoryUnavailable(f"{symbol} {timeframe.value} source rejected request: {error}")
+        raise ExternalHistoryUnavailable(
+            f"{symbol} {timeframe.value} source rejected request: {error}"
+        )
     result = results[0]
     timestamps = result.get("timestamp")
     quote_rows = result.get("indicators", {}).get("quote")
     if not isinstance(timestamps, list) or not isinstance(quote_rows, list) or len(quote_rows) != 1:
-        raise ExternalHistoryUnavailable(f"{symbol} {timeframe.value} source response lacks OHLC arrays.")
+        raise ExternalHistoryUnavailable(
+            f"{symbol} {timeframe.value} source response lacks OHLC arrays."
+        )
     quote = quote_rows[0]
     if not isinstance(quote, dict) or any(
-        not isinstance(quote.get(field), list) for field in ("open", "high", "low", "close", "volume")
+        not isinstance(quote.get(field), list)
+        for field in ("open", "high", "low", "close", "volume")
     ):
-        raise ExternalHistoryUnavailable(f"{symbol} {timeframe.value} source OHLC shape is invalid.")
-    if any(len(quote[field]) != len(timestamps) for field in ("open", "high", "low", "close", "volume")):
+        raise ExternalHistoryUnavailable(
+            f"{symbol} {timeframe.value} source OHLC shape is invalid."
+        )
+    if any(
+        len(quote[field]) != len(timestamps) for field in ("open", "high", "low", "close", "volume")
+    ):
         raise ExternalHistoryUnavailable(f"{symbol} {timeframe.value} source OHLC lengths differ.")
     parsed: list[tuple[datetime, Decimal, Decimal, Decimal, Decimal, Decimal | None]] = []
     for index, value in enumerate(timestamps):
         try:
             timestamp = datetime.fromtimestamp(int(value), UTC)
         except (OSError, TypeError, ValueError):
-            raise ExternalHistoryUnavailable(f"{symbol} {timeframe.value} has an invalid timestamp.") from None
+            raise ExternalHistoryUnavailable(
+                f"{symbol} {timeframe.value} has an invalid timestamp."
+            ) from None
         ohlc = tuple(_decimal(quote[field][index]) for field in ("open", "high", "low", "close"))
         if any(item is None for item in ohlc):
             continue
@@ -248,15 +271,15 @@ def _gap_classifications(
     recurring = Counter(
         (before.weekday(), before.hour, after.weekday(), after.hour)
         for before, after in transitions
-        if after - before > interval
-        and before.weekday() < 5
-        and after.weekday() < 5
+        if after - before > interval and before.weekday() < 5 and after.weekday() < 5
     )
     values = [GapClassification.NONE]
     for before, after in transitions:
         difference = after - before
         weekend = before.weekday() == 4 and after.weekday() in {6, 0}
-        recurring_session = recurring[(before.weekday(), before.hour, after.weekday(), after.hour)] >= 2
+        recurring_session = (
+            recurring[(before.weekday(), before.hour, after.weekday(), after.hour)] >= 2
+        )
         values.append(
             GapClassification.WEEKEND_OR_SESSION
             if difference > interval and (weekend or recurring_session)
@@ -288,7 +311,9 @@ def _resample_h4(dataset) -> object:
                 low=min(item.low for item in group),
                 close=group[-1].close,
                 spread=None,
-                volume=sum(volumes, Decimal("0")) if all(item is not None for item in volumes) else None,
+                volume=sum(volumes, Decimal("0"))
+                if all(item is not None for item in volumes)
+                else None,
                 source=group[0].source,
                 source_quality=group[0].source_quality,
                 gap_classification=group[0].gap_classification,
@@ -296,7 +321,9 @@ def _resample_h4(dataset) -> object:
             )
         )
     if not resampled:
-        raise ExternalHistoryUnavailable(f"{dataset.instrument} has no complete H4 aggregation windows.")
+        raise ExternalHistoryUnavailable(
+            f"{dataset.instrument} has no complete H4 aggregation windows."
+        )
     raw_fingerprint = dataset.source_fingerprint
     return build_dataset(resampled, source_documents=(raw_fingerprint,))
 
@@ -304,7 +331,11 @@ def _resample_h4(dataset) -> object:
 def _depth_status(dataset) -> DatasetDepthStatus:
     minimum_days = _MINIMUM_DAYS[dataset.timeframe]
     span = dataset.candles[-1].timestamp_utc - dataset.candles[0].timestamp_utc
-    return DatasetDepthStatus.SUFFICIENT if span >= timedelta(days=minimum_days) else DatasetDepthStatus.LOW_DATA_DEPTH
+    return (
+        DatasetDepthStatus.SUFFICIENT
+        if span >= timedelta(days=minimum_days)
+        else DatasetDepthStatus.LOW_DATA_DEPTH
+    )
 
 
 def _decimal(value: object) -> Decimal | None:

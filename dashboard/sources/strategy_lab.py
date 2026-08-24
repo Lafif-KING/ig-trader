@@ -46,12 +46,41 @@ def load_strategy_lab_snapshot(
         strategy_summary = {
             "strategies_tested": len({str(item["strategy"]) for item in entries}),
             "combinations_tested": len(entries),
-            "champion_candidates": sum(item.get("champion_challenger_rank") == "CHAMPION_CANDIDATE" for item in entries),
-            "challengers": sum(str(item.get("champion_challenger_rank", "")).startswith("CHALLENGER_") for item in entries),
-            "rejected": sum(item.get("classification") in {"RESEARCH_REJECTED", "NEGATIVE_EXPECTANCY", "OVERFIT_RISK", "STRESS_TEST_FAIL", "SOURCE_DIVERGENCE"} for item in entries),
-            "insufficient_data": sum(item.get("classification") in {"DATA_NOT_AVAILABLE", "DATA_QUALITY_FAIL", "LOW_DATA_DEPTH", "COST_MODEL_INCOMPLETE", "INSUFFICIENT_TRADES"} for item in entries),
-            "pre_simulation_blocked": sum(item.get("evaluation_state") == "PRE_SIMULATION_BLOCKED" for item in entries),
-            "simulated_and_failed": sum(item.get("evaluation_state") == "SIMULATED_AND_FAILED" for item in entries),
+            "champion_candidates": sum(
+                item.get("champion_challenger_rank") == "CHAMPION_CANDIDATE" for item in entries
+            ),
+            "challengers": sum(
+                str(item.get("champion_challenger_rank", "")).startswith("CHALLENGER_")
+                for item in entries
+            ),
+            "rejected": sum(
+                item.get("classification")
+                in {
+                    "RESEARCH_REJECTED",
+                    "NEGATIVE_EXPECTANCY",
+                    "OVERFIT_RISK",
+                    "STRESS_TEST_FAIL",
+                    "SOURCE_DIVERGENCE",
+                }
+                for item in entries
+            ),
+            "insufficient_data": sum(
+                item.get("classification")
+                in {
+                    "DATA_NOT_AVAILABLE",
+                    "DATA_QUALITY_FAIL",
+                    "LOW_DATA_DEPTH",
+                    "COST_MODEL_INCOMPLETE",
+                    "INSUFFICIENT_TRADES",
+                }
+                for item in entries
+            ),
+            "pre_simulation_blocked": sum(
+                item.get("evaluation_state") == "PRE_SIMULATION_BLOCKED" for item in entries
+            ),
+            "simulated_and_failed": sum(
+                item.get("evaluation_state") == "SIMULATED_AND_FAILED" for item in entries
+            ),
         }
     return StrategyLabSnapshot(
         available=True,
@@ -83,8 +112,12 @@ def _safe_entry(value: object) -> bool:
     version_is_present = isinstance(value.get("version") or value.get("strategy_version"), str)
     trade_count_is_present = isinstance(value.get("trades", value.get("trade_count")), int)
     status_is_present = isinstance(value.get("status", value.get("classification")), str)
-    return required.issubset(value) and version_is_present and trade_count_is_present and status_is_present and all(
-        isinstance(value[field], primitive) for field in required
+    return (
+        required.issubset(value)
+        and version_is_present
+        and trade_count_is_present
+        and status_is_present
+        and all(isinstance(value[field], primitive) for field in required)
     )
 
 
