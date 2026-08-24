@@ -81,6 +81,24 @@ orders, and positions are all 0.
 - SL-02 can only write ignored research artifacts and a Demo candidate registry
   with `execution_authority: OFF`; it cannot construct an IG order client.
 
+## SL-03 Deep Data and Signal Density
+
+- SL-03 is a separate, cache-first research package. It reads sanitized DQ-03
+  evidence directly in place, reuses only the permitted public SL-02 history
+  cache, and never sends an IG, Live, order, Azure, or execution-registry call.
+- Provider-neutral provenance records a structured Dukascopy local-cache
+  option for eligible FX/metals and a Yahoo-cache fallback. A missing deep
+  source is represented honestly; no HTML scraping, credential, or invented
+  history is used.
+- Every gap is audited before simulation. Deterministic weekends, US-index
+  holidays, and repeated market-session closures can be marked expected; all
+  remaining missing data preserves the global fail-closed quality result.
+- S0 remains frozen. S1-S7 have only separately versioned, coarse SL-03
+  challenger pairs. Selection is chronological and robustness-aware; untouched
+  test data is not used for selection. Funnel, walk-forward, friction-stress,
+  bootstrap, portfolio, watchlist, and candidate-registry artifacts remain
+  ignored local evidence with `execution_authority: OFF`.
+
 ## DQ-03 Instrument Resolution and Data
 
 - DQ-03 is a separate, read-only resolver for the existing 26-symbol research

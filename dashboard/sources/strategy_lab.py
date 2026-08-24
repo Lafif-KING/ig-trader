@@ -26,15 +26,20 @@ def load_strategy_lab_snapshot(
 ) -> StrategyLabSnapshot:
     """Read local generated evidence only; absence remains visible and safe."""
 
-    leaderboard = _load_object(artifact_directory / "sl02_leaderboard.json") or _load_object(
-        artifact_directory / "leaderboard.json"
+    leaderboard = (
+        _load_object(artifact_directory / "sl03_leaderboard.json")
+        or _load_object(artifact_directory / "sl02_leaderboard.json")
+        or _load_object(artifact_directory / "leaderboard.json")
     )
     if leaderboard is None or not isinstance(leaderboard.get("entries"), list):
         return StrategyLabSnapshot(available=False)
     entries = tuple(_normalise_entry(item) for item in leaderboard["entries"] if _safe_entry(item))
     instrument_summary = _load_object(artifact_directory / "instrument_summary.json")
     strategy_summary = _load_object(artifact_directory / "strategy_summary.json")
-    if instrument_summary is None and (artifact_directory / "sl02_leaderboard.json").is_file():
+    if instrument_summary is None and any(
+        (artifact_directory / name).is_file()
+        for name in ("sl03_leaderboard.json", "sl02_leaderboard.json")
+    ):
         instrument_summary = {
             "instrument_count": len({str(item["instrument"]) for item in entries}),
             "dataset_status": {
@@ -42,7 +47,10 @@ def load_strategy_lab_snapshot(
                 "not_available": sum(item.get("dataset_fingerprint") is None for item in entries),
             },
         }
-    if strategy_summary is None and (artifact_directory / "sl02_leaderboard.json").is_file():
+    if strategy_summary is None and any(
+        (artifact_directory / name).is_file()
+        for name in ("sl03_leaderboard.json", "sl02_leaderboard.json")
+    ):
         strategy_summary = {
             "strategies_tested": len({str(item["strategy"]) for item in entries}),
             "combinations_tested": len(entries),
@@ -129,6 +137,8 @@ def _normalise_entry(value: dict[str, object]) -> dict[str, object]:
         "version": value.get("version", value.get("strategy_version")),
         "trades": value.get("trades", value.get("trade_count")),
         "status": value.get("status", value.get("classification")),
+        "raw_signals": value.get("raw_signals", value.get("raw_strategy_signals")),
+        "oos_trades": value.get("oos_trades", value.get("oos_trade_count")),
     }
 
 

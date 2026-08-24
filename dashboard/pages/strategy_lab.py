@@ -95,14 +95,19 @@ def render(snapshot: StrategyLabSnapshot) -> None:
                 "Version": row["version"],
                 "Timeframe": row["timeframe"],
                 "Data source": row.get("data_source"),
+                "Data duration": row.get("candle_count"),
                 "Data depth": row.get("data_depth"),
+                "Raw signals": row.get("raw_signals"),
                 "Trades": row["trades"],
+                "OOS trades": row.get("oos_trades"),
                 "Win rate": row.get("win_rate"),
                 "Net R": row.get("net_r"),
                 "Expectancy": row.get("expectancy"),
                 "Profit factor": row.get("profit_factor"),
                 "Max drawdown": row.get("max_drawdown"),
                 "OOS expectancy": row.get("oos_expectancy"),
+                "+25% stress": _stress_expectancy(row, "1.25"),
+                "+50% stress": _stress_expectancy(row, "1.50"),
                 "Evaluation state": row.get("evaluation_state"),
                 "Classification": row.get("classification", row["status"]),
                 "Rank": row.get("champion_challenger_rank"),
@@ -147,3 +152,13 @@ def _filters(entries: tuple[dict[str, object], ...]) -> tuple[dict[str, object],
 
 def _count(value: object, name: str) -> str:
     return str(value.get(name, 0)) if isinstance(value, dict) else "0"
+
+
+def _stress_expectancy(row: dict[str, object], multiplier: str) -> object:
+    scenarios = row.get("stress_scenarios")
+    if not isinstance(scenarios, list):
+        return None
+    for scenario in scenarios:
+        if isinstance(scenario, dict) and str(scenario.get("cost_multiplier")) == multiplier:
+            return scenario.get("expectancy")
+    return None

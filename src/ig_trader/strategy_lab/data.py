@@ -32,6 +32,11 @@ class GapClassification(StrEnum):
     WEEKEND_OR_SESSION = "WEEKEND_OR_SESSION"
     MISSING_DATA = "MISSING_DATA"
     SOURCE_REPORTED = "SOURCE_REPORTED"
+    # SL-03 records a more specific audit classification outside this canonical
+    # transport enum.  These values permit lossless import of explicit provider
+    # diagnostics while retaining the existing fail-closed MISSING_DATA rule.
+    UNEXPLAINED_MISSING_DATA = "UNEXPLAINED_MISSING_DATA"
+    PROVIDER_OUTAGE = "PROVIDER_OUTAGE"
 
 
 TIMEFRAME_INTERVALS: dict[Timeframe, timedelta] = {
@@ -115,7 +120,17 @@ class CanonicalDataset:
 
     @property
     def has_quality_failure(self) -> bool:
-        return any(gap.classification is GapClassification.MISSING_DATA for gap in self.gaps)
+        # Never relax the global safety contract: a true unexplained gap, or a
+        # documented provider outage, blocks simulation until reviewed.
+        return any(
+            gap.classification
+            in {
+                GapClassification.MISSING_DATA,
+                GapClassification.UNEXPLAINED_MISSING_DATA,
+                GapClassification.PROVIDER_OUTAGE,
+            }
+            for gap in self.gaps
+        )
 
 
 def build_dataset(

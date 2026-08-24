@@ -76,12 +76,16 @@ class RuleStrategy:
         parameters = dict(self.definition.parameters)
         if len(history) < _minimum_history(self._rule, parameters):
             return None
-        closes = [float(candle.close) for candle in history]
-        atr = _atr(history[-15:])
+        # Every rule below only consults a bounded trailing window.  Keeping that
+        # window local makes broad offline research linear in the number of
+        # candles without changing the decision seen at any candle.
+        recent_history = history[-max(34, _minimum_history(self._rule, parameters)) :]
+        closes = [float(candle.close) for candle in recent_history]
+        atr = _atr(recent_history[-15:])
         if atr <= 0:
             return None
-        latest = history[-1]
-        previous = history[:-1]
+        latest = recent_history[-1]
+        previous = recent_history[:-1]
         if self._rule == "frozen_rsi_adx_reference":
             rsi = _rsi(closes[-8:])
             trend = abs(closes[-1] - closes[-8]) / atr
