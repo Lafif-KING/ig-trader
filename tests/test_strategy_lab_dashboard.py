@@ -43,3 +43,31 @@ def test_strategy_lab_snapshot_reads_only_expected_local_evidence(tmp_path: Path
     assert snapshot.available
     assert snapshot.entries[0]["instrument"] == "EURUSD"
     assert snapshot.instrument_summary == {"instrument_count": 1}
+
+
+def test_strategy_lab_snapshot_reads_sl02_read_only_evidence(tmp_path: Path) -> None:
+    (tmp_path / "sl02_leaderboard.json").write_text(
+        json.dumps(
+            {
+                "execution_authority": "OFF",
+                "entries": [
+                    {
+                        "instrument": "EURUSD",
+                        "asset_class": "FX",
+                        "strategy": "S1",
+                        "strategy_version": "1.0.0-sl02-p1",
+                        "timeframe": "1H",
+                        "trade_count": 0,
+                        "classification": "COST_MODEL_INCOMPLETE",
+                        "ig_epic": None,
+                        "data_depth": "SUFFICIENT",
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    snapshot = load_strategy_lab_snapshot(tmp_path)
+    assert snapshot.available
+    assert snapshot.entries[0]["version"] == "1.0.0-sl02-p1"
+    assert snapshot.entries[0]["status"] == "COST_MODEL_INCOMPLETE"

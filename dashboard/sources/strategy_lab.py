@@ -26,15 +26,36 @@ def load_strategy_lab_snapshot(
 ) -> StrategyLabSnapshot:
     """Read local generated evidence only; absence remains visible and safe."""
 
-    leaderboard = _load_object(artifact_directory / "leaderboard.json")
+    leaderboard = _load_object(artifact_directory / "sl02_leaderboard.json") or _load_object(
+        artifact_directory / "leaderboard.json"
+    )
     if leaderboard is None or not isinstance(leaderboard.get("entries"), list):
         return StrategyLabSnapshot(available=False)
-    entries = tuple(item for item in leaderboard["entries"] if _safe_entry(item))
+    entries = tuple(_normalise_entry(item) for item in leaderboard["entries"] if _safe_entry(item))
+    instrument_summary = _load_object(artifact_directory / "instrument_summary.json")
+    strategy_summary = _load_object(artifact_directory / "strategy_summary.json")
+    if instrument_summary is None and (artifact_directory / "sl02_leaderboard.json").is_file():
+        instrument_summary = {
+            "instrument_count": len({str(item["instrument"]) for item in entries}),
+            "dataset_status": {
+                "available": sum(item.get("dataset_fingerprint") is not None for item in entries),
+                "not_available": sum(item.get("dataset_fingerprint") is None for item in entries),
+            },
+        }
+    if strategy_summary is None and (artifact_directory / "sl02_leaderboard.json").is_file():
+        strategy_summary = {
+            "strategies_tested": len({str(item["strategy"]) for item in entries}),
+            "combinations_tested": len(entries),
+            "champion_candidates": sum(item.get("champion_challenger_rank") == "CHAMPION_CANDIDATE" for item in entries),
+            "challengers": sum(str(item.get("champion_challenger_rank", "")).startswith("CHALLENGER_") for item in entries),
+            "rejected": sum(item.get("classification") in {"RESEARCH_REJECTED", "NEGATIVE_EXPECTANCY", "OVERFIT_RISK", "STRESS_TEST_FAIL", "SOURCE_DIVERGENCE"} for item in entries),
+            "insufficient_data": sum(item.get("classification") in {"DATA_NOT_AVAILABLE", "DATA_QUALITY_FAIL", "LOW_DATA_DEPTH", "COST_MODEL_INCOMPLETE", "INSUFFICIENT_TRADES"} for item in entries),
+        }
     return StrategyLabSnapshot(
         available=True,
         entries=entries,
-        instrument_summary=_load_object(artifact_directory / "instrument_summary.json"),
-        strategy_summary=_load_object(artifact_directory / "strategy_summary.json"),
+        instrument_summary=instrument_summary,
+        strategy_summary=strategy_summary,
         dq03_metadata=_load_dq03_metadata(),
     )
 
@@ -54,15 +75,26 @@ def _safe_entry(value: object) -> bool:
         "instrument",
         "asset_class",
         "strategy",
-        "version",
         "timeframe",
-        "trades",
-        "status",
     }
     primitive = str | int | float | type(None)
-    return required.issubset(value) and all(
+    version_is_present = isinstance(value.get("version") or value.get("strategy_version"), str)
+    trade_count_is_present = isinstance(value.get("trades", value.get("trade_count")), int)
+    status_is_present = isinstance(value.get("status", value.get("classification")), str)
+    return required.issubset(value) and version_is_present and trade_count_is_present and status_is_present and all(
         isinstance(value[field], primitive) for field in required
     )
+
+
+def _normalise_entry(value: dict[str, object]) -> dict[str, object]:
+    """Give SL-01 and SL-02 evidence one safe dashboard shape."""
+
+    return {
+        **value,
+        "version": value.get("version", value.get("strategy_version")),
+        "trades": value.get("trades", value.get("trade_count")),
+        "status": value.get("status", value.get("classification")),
+    }
 
 
 def _load_dq03_metadata() -> tuple[dict[str, object], ...]:

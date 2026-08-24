@@ -79,10 +79,13 @@ def render(snapshot: StrategyLabSnapshot) -> None:
         [
             {
                 "Instrument": row["instrument"],
+                "IG EPIC": row.get("ig_epic"),
                 "Asset class": row["asset_class"],
                 "Strategy": row["strategy"],
                 "Version": row["version"],
                 "Timeframe": row["timeframe"],
+                "Data source": row.get("data_source"),
+                "Data depth": row.get("data_depth"),
                 "Trades": row["trades"],
                 "Win rate": row.get("win_rate"),
                 "Net R": row.get("net_r"),
@@ -90,7 +93,10 @@ def render(snapshot: StrategyLabSnapshot) -> None:
                 "Profit factor": row.get("profit_factor"),
                 "Max drawdown": row.get("max_drawdown"),
                 "OOS expectancy": row.get("oos_expectancy"),
-                "Status": row["status"],
+                "Classification": row.get("classification", row["status"]),
+                "Rank": row.get("champion_challenger_rank"),
+                "Why rejected": row.get("why_rejected"),
+                "Demo-ready": row.get("demo_ready", False),
             }
             for row in filtered
         ],

@@ -36,7 +36,7 @@
         "properties": {
           "gate_id": {"type": "string", "minLength": 1},
           "display_name": {"type": "string", "minLength": 1},
-          "group": {"enum": ["FOUNDATION", "SHADOW", "DEMO", "LIVE", "ENHANCEMENTS"]},
+          "group": {"enum": ["FOUNDATION", "SHADOW", "DEMO", "LIVE", "RESEARCH", "ENHANCEMENTS"]},
           "plain_english_description": {"type": "string", "minLength": 1},
           "governance_status": {"$ref": "#/$defs/status"},
           "technical_status": {"$ref": "#/$defs/status"},

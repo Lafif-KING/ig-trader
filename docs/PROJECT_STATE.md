@@ -53,6 +53,20 @@ orders, and positions are all 0.
 - The Control Center can show local generated Strategy Lab artifacts. It has no
   promotion button; Demo and Live authority remain disabled.
 
+## SL-02 Broad Strategy Qualification
+
+- SL-02 is a separate research-only batch over the verified 20-instrument
+  scope. It uses an explicit external-history mapping and an ignored local
+  cache; external structured data is never labelled as IG data.
+- Every external dataset records provider, acquisition time, source and dataset
+  fingerprints, UTC range, gaps, depth, and any measurable DQ-03 overlap.
+  Missing DQ-03 broker samples, metadata, or reviewed cost evidence fail closed.
+- S0 remains frozen. S1-S7 use small recorded grids, chronological selection,
+  walk-forward OOS evidence, and base/+25%/+50% friction stress only when a
+  fingerprint-bound cost model has been supplied.
+- SL-02 can only write ignored research artifacts and a Demo candidate registry
+  with `execution_authority: OFF`; it cannot construct an IG order client.
+
 ## DQ-03 Instrument Resolution and Data
 
 - DQ-03 is a separate, read-only resolver for the existing 26-symbol research

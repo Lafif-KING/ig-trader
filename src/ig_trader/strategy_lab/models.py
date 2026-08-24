@@ -162,6 +162,8 @@ _FX_DEFAULT = (
     StrategyFamily.S2_BREAKOUT,
     StrategyFamily.S3_MEAN_REVERSION,
     StrategyFamily.S4_SESSION_SWEEP,
+    StrategyFamily.S5_VOLATILITY_REGIME,
+    StrategyFamily.S6_PRICE_STRUCTURE,
     StrategyFamily.S7_MULTI_TIMEFRAME_TREND,
 )
 _VOLATILE_JPY = (
@@ -174,6 +176,7 @@ _VOLATILE_JPY = (
 _METAL = (
     StrategyFamily.S1_TREND_MOMENTUM,
     StrategyFamily.S2_BREAKOUT,
+    StrategyFamily.S4_SESSION_SWEEP,
     StrategyFamily.S5_VOLATILITY_REGIME,
     StrategyFamily.S6_PRICE_STRUCTURE,
     StrategyFamily.S7_MULTI_TIMEFRAME_TREND,
@@ -181,7 +184,6 @@ _METAL = (
 _INDEX = (
     StrategyFamily.S1_TREND_MOMENTUM,
     StrategyFamily.S2_BREAKOUT,
-    StrategyFamily.S3_MEAN_REVERSION,
     StrategyFamily.S4_SESSION_SWEEP,
     StrategyFamily.S5_VOLATILITY_REGIME,
     StrategyFamily.S7_MULTI_TIMEFRAME_TREND,
@@ -192,12 +194,7 @@ def suitable_families(instrument: InstrumentSpec) -> tuple[StrategyFamily, ...]:
     """Return limited initial hypotheses instead of every possible combination."""
 
     if instrument.symbol == "EURGBP":
-        return (
-            StrategyFamily.S1_TREND_MOMENTUM,
-            StrategyFamily.S2_BREAKOUT,
-            StrategyFamily.S3_MEAN_REVERSION,
-            StrategyFamily.S4_SESSION_SWEEP,
-        )
+        return _FX_DEFAULT
     if instrument.symbol in {"GBPJPY", "EURJPY", "AUDJPY", "CADJPY", "CHFJPY"}:
         return _VOLATILE_JPY
     if instrument.asset_class is AssetClass.FX:
@@ -250,6 +247,7 @@ TIMEFRAME_COMPATIBILITY: Final[dict[StrategyFamily, dict[AssetClass, tuple[Timef
     },
     StrategyFamily.S4_SESSION_SWEEP: {
         AssetClass.FX: (Timeframe.H1, Timeframe.M15, Timeframe.M5),
+        AssetClass.METAL: (Timeframe.H1, Timeframe.M15, Timeframe.M5),
         AssetClass.INDEX: (Timeframe.M15, Timeframe.M5, Timeframe.M1),
     },
     StrategyFamily.S5_VOLATILITY_REGIME: {
@@ -261,6 +259,7 @@ TIMEFRAME_COMPATIBILITY: Final[dict[StrategyFamily, dict[AssetClass, tuple[Timef
     StrategyFamily.S6_PRICE_STRUCTURE: {
         AssetClass.FX: (Timeframe.H1, Timeframe.M15, Timeframe.M5),
         AssetClass.METAL: (Timeframe.H1, Timeframe.M15, Timeframe.M5),
+        AssetClass.INDEX: (Timeframe.M15, Timeframe.M5),
         AssetClass.ENERGY: (Timeframe.H1, Timeframe.M15, Timeframe.M5),
     },
     StrategyFamily.S7_MULTI_TIMEFRAME_TREND: {

@@ -64,6 +64,10 @@ def test_strategy_lab_gate_is_in_progress_and_cannot_change_authority_readiness(
     assert strategy_lab.governance_status == "IN_PROGRESS"
     assert strategy_lab.technical_status == "IN_PROGRESS"
     assert strategy_lab.weight == 0
+    sl02 = gates["SL02_BROAD_STRATEGY_QUALIFICATION"]
+    assert sl02.group == "RESEARCH"
+    assert sl02.governance_status == sl02.technical_status == "IN_PROGRESS"
+    assert sl02.weight == 0
     authority = tuple(gate for gate in gates.values() if gate.group in {"SHADOW", "DEMO", "LIVE"})
     assert weighted_progress(authority, authority=True) == 32
 
@@ -77,7 +81,14 @@ def test_project_gates_keep_reviewed_links_and_current_verification_dates() -> N
     assert gates["SHADOW_CORE"].related_pr == "#10"
     assert gates["SHADOW_POSTGRES_STORE"].related_pr == "#11"
     assert gates["SHADOW_RUNTIME_V3"].related_pr == "#12"
-    assert all(gate.last_verified_at.isoformat() == REVIEWED_AT for gate in gates.values())
+    assert all(
+        gate.last_verified_at.isoformat() == REVIEWED_AT
+        for gate_id, gate in gates.items()
+        if gate_id != "SL02_BROAD_STRATEGY_QUALIFICATION"
+    )
+    assert gates["SL02_BROAD_STRATEGY_QUALIFICATION"].last_verified_at.isoformat() == (
+        "2026-08-24T00:00:00+00:00"
+    )
 
 
 def test_project_status_rejects_missing_summary_required_field(tmp_path: Path) -> None:
