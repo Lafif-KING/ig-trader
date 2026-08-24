@@ -1,6 +1,7 @@
 """HTTP client with retry logic and structured logging."""
 
 import ssl
+from collections.abc import Callable
 from typing import Any
 
 import httpx
@@ -28,6 +29,7 @@ class HTTPClient:
         api_key: str,
         timeout: float = 30.0,
         max_retries: int = 3,
+        request_observer: Callable[[str, str], None] | None = None,
     ) -> None:
         """
         Initialize HTTP client.
@@ -42,10 +44,12 @@ class HTTPClient:
         self.api_key = api_key
         self.timeout = timeout
         self.max_retries = max_retries
+        self._request_observer = request_observer
         self.client = httpx.Client(
             base_url=base_url,
             timeout=timeout,
             headers={"X-IG-API-KEY": api_key},
+            verify=build_system_ssl_context(),
         )
 
     def get(self, endpoint: str, **kwargs: Any) -> httpx.Response:
@@ -89,6 +93,8 @@ class HTTPClient:
                     max_retries=self.max_retries,
                 )
 
+                if self._request_observer:
+                    self._request_observer(method, endpoint)
                 response = self.client.request(method, endpoint, **kwargs)
 
                 logger.info(

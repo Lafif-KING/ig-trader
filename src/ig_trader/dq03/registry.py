@@ -97,8 +97,8 @@ SEARCH_REGISTRY.update(
         "USCRUDE": InstrumentSearchRule(
             "USCRUDE",
             AssetClass.ENERGY,
-            ("US Crude", "WTI", "Oil - US Crude"),
-            ("us crude", "wti", "oil us crude"),
+            ("US Crude", "WTI", "Oil - US Crude", "Pétrole - US Brut Léger"),
+            ("us crude", "wti", "oil us crude", "us brut léger"),
         ),
         "BRENT": InstrumentSearchRule(
             "BRENT", AssetClass.ENERGY, ("Brent", "Brent Crude"), ("brent",)

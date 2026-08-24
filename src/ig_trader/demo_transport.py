@@ -11,7 +11,7 @@ protocol; callers must not invoke them directly.
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from decimal import Decimal, InvalidOperation
@@ -33,6 +33,16 @@ APPROVED_IG_DEMO_BASE_URLS = frozenset({IG_DEMO_BASE_URL})
 
 class DemoTransportError(RuntimeError):
     """A Demo REST response or endpoint cannot be trusted."""
+
+
+class IGDemo403Error(DemoTransportError):
+    """Sanitized 403 classification; the response body itself is never retained."""
+
+    def __init__(self, classification: str, error_code: str | None) -> None:
+        self.classification = classification
+        self.error_code = error_code
+        suffix = f" ({error_code})" if error_code else ""
+        super().__init__(f"IG Demo request returned HTTP 403: {classification}{suffix}")
 
 
 class AuthorizedIGSession(Protocol):
@@ -102,6 +112,11 @@ class IGDemoMarketDetails:
     offer: Decimal | None
     observed_at: datetime
     controlled_risk_supported: bool | None = None
+    minimum_deal_size_unit: str | None = None
+    minimum_stop_distance_unit: str | None = None
+    contract_size: Decimal | None = None
+    lot_size: Decimal | None = None
+    scaling_factor: int | None = None
 
     def to_execution_metadata(self) -> DemoMarketMetadata:
         """Project the DQ-01 validation fields without filling missing values."""
@@ -143,9 +158,16 @@ def validate_ig_demo_endpoint(base_url: str | None) -> str:
 class IGDemoRESTTransport:
     """Real IG Demo adapter with strict response validation and no token logging."""
 
-    def __init__(self, *, session: AuthorizedIGSession, base_url: str) -> None:
+    def __init__(
+        self,
+        *,
+        session: AuthorizedIGSession,
+        base_url: str,
+        error_observer: Callable[[IGDemo403Error], None] | None = None,
+    ) -> None:
         self._session = session
         self.base_url = validate_ig_demo_endpoint(base_url)
+        self._error_observer = error_observer
 
     def get_account(self) -> IGDemoAccount:
         document = self._request_json("GET", "/session", version="1")
@@ -218,6 +240,33 @@ class IGDemoRESTTransport:
         document = self._request_json("GET", f"/markets/{epic}", version="4")
         return _market_details(document, epic=epic)
 
+    def get_markets(self, epics: tuple[str, ...]) -> dict[str, IGDemoMarketDetails]:
+        """Read multiple known EPICs through IG's non-mutating V2 markets endpoint."""
+
+        unique = tuple(dict.fromkeys(epics))
+        if not unique or len(unique) > 50:
+            raise DemoTransportError("batched market EPIC count is invalid")
+        for epic in unique:
+            _required_identifier(epic, "EPIC")
+        document = self._request_json(
+            "GET", "/markets", version="2", params={"epics": ",".join(unique)}
+        )
+        values = document.get("marketDetails")
+        if not isinstance(values, list):
+            values = document.get("markets")
+        if not isinstance(values, list):
+            raise DemoTransportError("IG batched market response is incomplete")
+        details: dict[str, IGDemoMarketDetails] = {}
+        for value in values:
+            if not isinstance(value, Mapping):
+                continue
+            document_epic = _text(_mapping(value.get("instrument")).get("epic")) or _text(
+                value.get("epic")
+            )
+            if document_epic in unique:
+                details[document_epic] = _market_details(value, epic=document_epic)
+        return details
+
     def search_markets(self, search_term: str) -> tuple[dict[str, object], ...]:
         """Return only minimal discovery candidates; selection remains conservative."""
 
@@ -280,6 +329,11 @@ class IGDemoRESTTransport:
             or history
         ):
             raise DemoTransportError("IG Demo response redirected or is invalid")
+        if status_code == 403:
+            error = IGDemo403Error(classify_ig_demo_403(response), _error_code(response))
+            if self._error_observer:
+                self._error_observer(error)
+            raise error
         if not 200 <= status_code < 300:
             raise DemoTransportError(f"IG Demo request failed with HTTP status {status_code}")
         try:
@@ -329,14 +383,11 @@ def _market_details(document: Mapping[str, object], *, epic: str) -> IGDemoMarke
     instrument = _mapping(document.get("instrument"))
     snapshot = _mapping(document.get("snapshot"))
     rules = _mapping(document.get("dealingRules"))
-    currencies = instrument.get("currencies")
-    currency = None
-    if isinstance(currencies, list) and len(currencies) == 1:
-        currency = _text(_mapping(currencies[0]).get("code"))
-    min_size = _rule_value(rules.get("minDealSize"))
-    min_stop = _rule_value(rules.get("minNormalStopOrLimitDistance"))
+    currency = _default_currency(instrument.get("currencies"))
+    min_size, min_size_unit = _rule_value(rules.get("minDealSize"))
+    min_stop, min_stop_unit = _rule_value(rules.get("minNormalStopOrLimitDistance"))
     decimal_places = _integer(snapshot.get("decimalPlacesFactor"))
-    pip = _decimal(instrument.get("onePipMeans"))
+    pip = _leading_decimal(instrument.get("onePipMeans"))
     return IGDemoMarketDetails(
         epic=epic,
         display_name=_text(instrument.get("name")),
@@ -348,12 +399,17 @@ def _market_details(document: Mapping[str, object], *, epic: str) -> IGDemoMarke
         minimum_stop_distance=min_stop,
         decimal_places=decimal_places,
         pip_or_tick_size=pip,
-        value_of_one_pip=_decimal(instrument.get("valueOfOnePip")),
+        value_of_one_pip=_leading_decimal(instrument.get("valueOfOnePip")),
         streaming_available=_bool(instrument.get("streamingPricesAvailable")),
         bid=_decimal(snapshot.get("bid")),
-        offer=_decimal(snapshot.get("offer")),
+        offer=_first_decimal(snapshot.get("offer"), snapshot.get("ask")),
         observed_at=datetime.now(UTC),
         controlled_risk_supported=_bool(instrument.get("controlledRiskAllowed")),
+        minimum_deal_size_unit=min_size_unit,
+        minimum_stop_distance_unit=min_stop_unit,
+        contract_size=_decimal(instrument.get("contractSize")),
+        lot_size=_decimal(instrument.get("lotSize")),
+        scaling_factor=_integer(snapshot.get("scalingFactor")),
     )
 
 
@@ -392,6 +448,22 @@ def _integer(value: object) -> int | None:
     return value
 
 
+def _leading_decimal(value: object) -> Decimal | None:
+    """Read IG values such as ``0.0001 USD`` without treating arbitrary text as a number."""
+
+    if isinstance(value, str):
+        value = value.strip().split(maxsplit=1)[0] if value.strip() else None
+    return _decimal(value)
+
+
+def _first_decimal(*values: object) -> Decimal | None:
+    for value in values:
+        parsed = _decimal(value)
+        if parsed is not None:
+            return parsed
+    return None
+
+
 def _bool(value: object) -> bool | None:
     return value if isinstance(value, bool) else None
 
@@ -413,11 +485,68 @@ def _datetime(value: object) -> datetime | None:
     return parsed.astimezone(UTC)
 
 
-def _rule_value(value: object) -> Decimal | None:
+def _rule_value(value: object) -> tuple[Decimal | None, str | None]:
     rule = _mapping(value)
-    if _text(rule.get("unit")) != "POINTS":
+    unit = _text(rule.get("unit"))
+    if unit != "POINTS":
+        return None, unit
+    return _decimal(rule.get("value")), unit
+
+
+def _default_currency(value: object) -> str | None:
+    """Return a sole currency or the one broker-declared default currency."""
+
+    if not isinstance(value, list):
         return None
-    return _decimal(rule.get("value"))
+    if len(value) == 1:
+        return _text(_mapping(value[0]).get("code"))
+    defaults = [
+        _text(_mapping(item).get("code"))
+        for item in value
+        if _mapping(item).get("isDefault") is True
+    ]
+    selected = [code for code in defaults if code]
+    return selected[0] if len(selected) == 1 else None
+
+
+def _error_code(response: object) -> str | None:
+    """Extract a small, non-secret IG error identifier from an error JSON document."""
+
+    try:
+        document = response.json()
+    except Exception:
+        return None
+    if not isinstance(document, Mapping):
+        return None
+    for name in ("errorCode", "error_code", "code"):
+        value = _text(document.get(name))
+        if value:
+            return value[:160]
+    return None
+
+
+def classify_ig_demo_403(response: object) -> str:
+    """Classify a broker 403 without exposing its body or authentication values."""
+
+    code = (_error_code(response) or "").casefold()
+    if "historical-data-allowance" in code:
+        return "HISTORICAL_ALLOWANCE"
+    if "exceeded-account" in code:
+        return "RATE_LIMIT_ACCOUNT"
+    if "exceeded-api-key" in code:
+        return "RATE_LIMIT_API_KEY"
+    if any(
+        token in code
+        for token in (
+            "api-key-disabled",
+            "api-key-invalid",
+            "api-key-restricted",
+            "api-key-revoked",
+            "endpoint.unavailable.for.api-key",
+        )
+    ):
+        return "API_KEY_INVALID_OR_RESTRICTED"
+    return "UNKNOWN_403"
 
 
 def _required_identifier(value: str, name: str) -> None:

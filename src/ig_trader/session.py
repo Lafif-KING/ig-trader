@@ -1,5 +1,6 @@
 """IG API session manager with automatic token refresh."""
 
+from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
@@ -14,16 +15,23 @@ logger = structlog.get_logger(__name__)
 class SessionManager:
     """Manages IG API sessions: login, logout, token refresh."""
 
-    def __init__(self) -> None:
+    def __init__(
+        self,
+        *,
+        request_observer: Callable[[str, str], None] | None = None,
+        response_error_observer: Callable[[Any], None] | None = None,
+    ) -> None:
         """Initialize session manager."""
         self.cst: str | None = None
         self.x_security_token: str | None = None
         self.account_id: str | None = None
         self.lightstreamer_endpoint: str | None = None
         self.token_expiry: datetime | None = None
+        self._response_error_observer = response_error_observer
         self.http_client = HTTPClient(
             base_url=settings.ig_base_url,
             api_key=settings.ig_api_key,
+            request_observer=request_observer,
         )
 
     def login(self) -> bool:
@@ -65,6 +73,8 @@ class SessionManager:
             )
             return True
         else:
+            if response.status_code == 403 and self._response_error_observer:
+                self._response_error_observer(response)
             logger.error(
                 "login_failed",
                 status_code=response.status_code,

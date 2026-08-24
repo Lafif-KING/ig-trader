@@ -57,7 +57,12 @@ orders, and positions are all 0.
 
 - DQ-03 is a separate, read-only resolver for the existing 26-symbol research
   universe. It uses explicit IG search aliases, contract-type exclusions,
-  metadata fingerprints, and a fixed per-run request budget.
+  metadata fingerprints, batched V2 market reads with bounded V4 fallbacks,
+  and a centrally counted rolling limit of 25 non-trading REST calls per
+  sixty seconds. A 403 is classified and safe-stopped rather than retried.
+- Discovery/metadata, bounded history, and streaming smoke are separate,
+  resumable phases. Later phases require fresh Phase 1 artifacts for the same
+  sanitized Demo account identity and resolver version.
 - The resulting local artifacts are ignored by Git. They record broker facts
   and bounded validation samples only; they never create a Demo execution
   registration or change the disabled Demo/Live authority gates.

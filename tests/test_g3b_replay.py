@@ -665,7 +665,7 @@ def test_cli_proves_zero_network_ig_stream_order_and_credentials(tmp_path: Path)
     for name in ("IG_ENVIRONMENT", "EXECUTION_MODE"):
         environment.pop(name, None)
     trading_database = ROOT / "trading.db"
-    database_mtime = trading_database.stat().st_mtime_ns
+    database_mtime = trading_database.stat().st_mtime_ns if trading_database.exists() else None
 
     completed = subprocess.run(
         command,
@@ -692,7 +692,10 @@ def test_cli_proves_zero_network_ig_stream_order_and_credentials(tmp_path: Path)
     assert evidence["performance_evidence_classification"] == "NEGATIVE_ON_AVAILABLE_SAMPLE"
     assert evidence["final_recommendation"] == "PASS_FOR_G3B_MERGE"
     assert evidence["candidate_disposition_counts"]["RISK_REJECTION_ACCOUNT_STATE"] == 0
-    assert trading_database.stat().st_mtime_ns == database_mtime
+    if database_mtime is None:
+        assert not trading_database.exists()
+    else:
+        assert trading_database.stat().st_mtime_ns == database_mtime
 
 
 def test_cli_stops_before_execution_on_qualification_account_state_gap(

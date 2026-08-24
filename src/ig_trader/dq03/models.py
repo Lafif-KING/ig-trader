@@ -41,15 +41,29 @@ class RequestCounters:
 
     preflight_request_count: int = 0
     search_request_count: int = 0
-    metadata_request_count: int = 0
+    batched_metadata_request_count: int = 0
+    single_metadata_request_count: int = 0
     history_request_count: int = 0
     history_points_consumed: int = 0
     streaming_subscription_count: int = 0
+    rate_limit_wait_count: int = 0
+    rate_limit_wait_seconds: float = 0.0
+    http_403_count: int = 0
+    http_403_classifications: dict[str, int] | None = None
+    observed_non_trading_request_count: int = 0
     demo_create_calls: int = 0
     demo_close_calls: int = 0
 
     @property
-    def total_ig_requests(self) -> int:
+    def metadata_request_count(self) -> int:
+        """Compatibility total for metadata reads, without hiding their source."""
+
+        return self.batched_metadata_request_count + self.single_metadata_request_count
+
+    @property
+    def total_non_trading_requests(self) -> int:
+        if self.observed_non_trading_request_count:
+            return self.observed_non_trading_request_count
         return (
             self.preflight_request_count
             + self.search_request_count
@@ -57,15 +71,35 @@ class RequestCounters:
             + self.history_request_count
         )
 
-    def document(self) -> dict[str, int]:
+    @property
+    def total_ig_requests(self) -> int:
+        """Backward-compatible name for non-trading DQ-03 REST accounting."""
+
+        return self.total_non_trading_requests
+
+    def record_403(self, classification: str) -> None:
+        self.http_403_count += 1
+        values = self.http_403_classifications or {}
+        values[classification] = values.get(classification, 0) + 1
+        self.http_403_classifications = values
+
+    def document(self) -> dict[str, object]:
         return {
             "preflight_request_count": self.preflight_request_count,
             "search_request_count": self.search_request_count,
+            "batched_metadata_request_count": self.batched_metadata_request_count,
+            "single_metadata_request_count": self.single_metadata_request_count,
             "metadata_request_count": self.metadata_request_count,
             "history_request_count": self.history_request_count,
             "history_points_consumed": self.history_points_consumed,
             "streaming_subscription_count": self.streaming_subscription_count,
-            "total_IG_requests": self.total_ig_requests,
+            "total_non_trading_requests": self.total_non_trading_requests,
+            "observed_non_trading_request_count": self.observed_non_trading_request_count,
+            "total_IG_requests": self.total_non_trading_requests,
+            "rate_limit_wait_count": self.rate_limit_wait_count,
+            "rate_limit_wait_seconds": round(self.rate_limit_wait_seconds, 3),
+            "http_403_count": self.http_403_count,
+            "http_403_classifications": dict(sorted((self.http_403_classifications or {}).items())),
             "demo_create_calls": self.demo_create_calls,
             "demo_close_calls": self.demo_close_calls,
         }
@@ -91,6 +125,11 @@ class MarketMetadata:
     offer: Decimal | None
     controlled_risk_supported: bool | None
     observed_at: datetime
+    minimum_deal_size_unit: str | None = None
+    minimum_stop_distance_unit: str | None = None
+    contract_size: Decimal | None = None
+    lot_size: Decimal | None = None
+    scaling_factor: int | None = None
 
     @property
     def spread(self) -> Decimal | None:
@@ -99,39 +138,36 @@ class MarketMetadata:
         return self.offer - self.bid
 
     @property
-    def complete(self) -> bool:
-        return all(
-            value is not None
-            for value in (
-                self.display_name,
-                self.instrument_type,
-                self.expiry,
-                self.market_status,
-                self.currency,
-                self.minimum_deal_size,
-                self.minimum_stop_distance,
-                self.decimal_places,
-                self.one_pip_means,
-                self.value_of_one_pip,
-                self.streaming_prices_available,
-                self.bid,
-                self.offer,
-            )
-        ) and bool(
-            self.minimum_deal_size
-            and self.minimum_deal_size > 0
-            and self.minimum_stop_distance
-            and self.minimum_stop_distance > 0
-            and self.one_pip_means
-            and self.one_pip_means > 0
-            and self.value_of_one_pip
-            and self.value_of_one_pip > 0
-            and self.bid
-            and self.bid > 0
-            and self.offer
-            and self.offer > 0
-            and self.spread is not None
+    def missing_fields(self) -> tuple[str, ...]:
+        """Required facts that were absent or unusable in the broker response."""
+
+        missing: list[str] = []
+        scalar_fields = (
+            ("display_name", self.display_name),
+            ("instrument_type", self.instrument_type),
+            ("expiry", self.expiry),
+            ("market_status", self.market_status),
+            ("currency", self.currency),
+            ("decimal_places", self.decimal_places),
+            ("streaming_prices_available", self.streaming_prices_available),
         )
+        missing.extend(name for name, value in scalar_fields if value is None)
+        positive_fields = (
+            ("minimum_deal_size", self.minimum_deal_size),
+            ("minimum_stop_distance", self.minimum_stop_distance),
+            ("pip_or_tick_size", self.one_pip_means),
+            ("value_of_one_pip", self.value_of_one_pip),
+            ("bid", self.bid),
+            ("offer", self.offer),
+        )
+        missing.extend(name for name, value in positive_fields if value is None or value <= 0)
+        if self.spread is None:
+            missing.append("valid_bid_offer_spread")
+        return tuple(missing)
+
+    @property
+    def complete(self) -> bool:
+        return not self.missing_fields
 
     @property
     def fingerprint(self) -> str:
@@ -155,6 +191,12 @@ class MarketMetadata:
             "offer": _decimal_document(self.offer),
             "spread": _decimal_document(self.spread),
             "controlled_risk_supported": self.controlled_risk_supported,
+            "minimum_deal_size_unit": self.minimum_deal_size_unit,
+            "minimum_stop_distance_unit": self.minimum_stop_distance_unit,
+            "contract_size": _decimal_document(self.contract_size),
+            "lot_size": _decimal_document(self.lot_size),
+            "scaling_factor": self.scaling_factor,
+            "missing_fields": list(self.missing_fields),
             "observed_at_utc": self.observed_at.astimezone(UTC).isoformat(),
         }
 
@@ -174,6 +216,14 @@ class CandidateEvidence:
     reasons: tuple[str, ...]
     metadata: MarketMetadata | None = None
 
+    @property
+    def missing_fields(self) -> tuple[str, ...]:
+        if self.metadata:
+            return self.metadata.missing_fields
+        if any(reason.startswith("Metadata unavailable:") for reason in self.reasons):
+            return ("metadata_response_unavailable",)
+        return ()
+
     def document(self) -> dict[str, object]:
         return {
             "epic": self.epic,
@@ -186,6 +236,7 @@ class CandidateEvidence:
             "selected": self.selected,
             "reasons": list(self.reasons),
             "metadata": self.metadata.document() if self.metadata else None,
+            "missing_fields": list(self.missing_fields),
         }
 
 
@@ -211,6 +262,14 @@ class DQ03Resolution:
     cost_model_status: DataStatus = DataStatus.COST_MODEL_INCOMPLETE
 
     @property
+    def missing_fields(self) -> tuple[str, ...]:
+        if self.metadata:
+            return self.metadata.missing_fields
+        if self.classification is DQ03Status.METADATA_INCOMPLETE and self.selected_epic:
+            return ("metadata_response_unavailable",)
+        return ()
+
+    @property
     def metadata_fingerprint(self) -> str | None:
         return self.metadata.fingerprint if self.metadata else None
 
@@ -220,16 +279,20 @@ class DQ03Resolution:
             "asset_class": self.asset_class.value,
             "classification": self.classification.value,
             "selected_epic": self.selected_epic,
+            "selected_candidate_epic": self.selected_epic,
+            "selected_candidate_name": self.display_name if self.selected_epic else None,
             "display_name": self.display_name,
             "selected_search_alias": self.selected_alias,
             "candidate_count": self.candidate_count,
             "selection_score": self.selection_score,
+            "candidate_score": self.selection_score,
             "selection_reasons": list(self.selection_reasons),
             "rejected_candidates": [
                 item.document() for item in self.candidates if not item.selected
             ],
             "candidates": [item.document() for item in self.candidates],
             "metadata": self.metadata.document() if self.metadata else None,
+            "missing_fields": list(self.missing_fields),
             "metadata_fingerprint": self.metadata_fingerprint,
             "data_status": self.data_status.value,
             "cost_model_status": self.cost_model_status.value,
@@ -271,6 +334,13 @@ def metadata_from_transport(
         offer=_decimal(getattr(value, "offer", None)),
         controlled_risk_supported=_boolean(getattr(value, "controlled_risk_supported", None)),
         observed_at=(observed_at or getattr(value, "observed_at", None) or datetime.now(UTC)),
+        minimum_deal_size_unit=_optional_text(getattr(value, "minimum_deal_size_unit", None)),
+        minimum_stop_distance_unit=_optional_text(
+            getattr(value, "minimum_stop_distance_unit", None)
+        ),
+        contract_size=_decimal(getattr(value, "contract_size", None)),
+        lot_size=_decimal(getattr(value, "lot_size", None)),
+        scaling_factor=_integer(getattr(value, "scaling_factor", None)),
     )
 
 

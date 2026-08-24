@@ -22,16 +22,14 @@ from src.ig_trader.dq03.registry import InstrumentSearchRule, search_rule
 from src.ig_trader.strategy_lab.models import INITIAL_INSTRUMENTS, AssetClass, InstrumentSpec
 
 
-class DQ03RequestBudgetExceeded(RuntimeError):
-    """A run has reached its explicit IG request ceiling."""
-
-
 class DQ03Transport(Protocol):
     """The read-only subset of IG Demo transport used by the resolver."""
 
     def search_markets(self, search_term: str) -> tuple[dict[str, object], ...]: ...
 
     def get_market(self, epic: str) -> object: ...
+
+    def get_markets(self, epics: tuple[str, ...]) -> Mapping[str, object]: ...
 
 
 _PRODUCT_REJECT_TERMS = (
@@ -43,6 +41,16 @@ _PRODUCT_REJECT_TERMS = (
     "share",
     "equity",
     "stock",
+    "plc",
+    "ltd",
+    "limited",
+    "inc",
+    "corp",
+    "corporation",
+    "group",
+    "mining",
+    "gaming",
+    "entertainment",
     "fund",
     "company",
     "expired",
@@ -51,7 +59,9 @@ _PRODUCT_REJECT_TERMS = (
 )
 _EXPECTED_TYPES = {
     AssetClass.FX: ("currenc", "forex", "fx"),
-    AssetClass.METAL: ("commod", "metal"),
+    # IG's physical precious-metal contracts can be labelled CURRENCIES; the
+    # canonical metal identity and all cash/spot metadata checks still apply.
+    AssetClass.METAL: ("commod", "metal", "currenc"),
     AssetClass.INDEX: ("indice", "index"),
     AssetClass.ENERGY: ("commod", "energy"),
 }
@@ -69,54 +79,99 @@ class DQ03InstrumentResolver:
         self,
         transport: DQ03Transport,
         *,
-        request_budget: int = 180,
-        shortlist_limit: int = 8,
+        shortlist_limit: int = 3,
         selection_margin: int = 2,
         clock: Callable[[], datetime] = lambda: datetime.now(UTC),
+        counters: RequestCounters | None = None,
     ) -> None:
-        if request_budget < 1 or shortlist_limit < 1 or selection_margin < 0:
-            raise ValueError("DQ-03 request and selection limits must be positive")
+        if shortlist_limit < 1 or selection_margin < 0:
+            raise ValueError("DQ-03 selection limits must be positive")
         self._transport = transport
-        self._request_budget = request_budget
         self._shortlist_limit = shortlist_limit
         self._selection_margin = selection_margin
         self._clock = clock
-        self.counters = RequestCounters()
+        self.counters = counters or RequestCounters()
         self._search_cache: dict[str, tuple[dict[str, object], ...]] = {}
         self._metadata_cache: dict[str, MarketMetadata] = {}
+        self._metadata_failures: dict[str, str] = {}
 
     def resolve_universe(
         self, instruments: tuple[InstrumentSpec, ...] = INITIAL_INSTRUMENTS
     ) -> tuple[DQ03Resolution, ...]:
         """Return all requested symbols even if a safe selection cannot be made."""
 
-        return tuple(self.resolve_symbol(instrument) for instrument in instruments)
+        specs = tuple(_instrument_spec(instrument) for instrument in instruments)
+        observed: dict[str, tuple[_ObservedCandidate, ...]] = {}
+        failed: dict[str, str] = {}
+        for spec in specs:
+            try:
+                observed[spec.symbol] = self._collect_candidates(spec, search_rule(spec))
+            except RuntimeError as error:
+                failed[spec.symbol] = _safe_error(error)
+                observed[spec.symbol] = ()
+
+        # Batch the bounded candidate shortlists across the whole universe.  This
+        # is deliberately before resolution: one V2 request can verify contracts
+        # discovered from different symbols, rather than one V4 request each.
+        candidates_to_fetch: list[str] = []
+        for spec in specs:
+            rule = search_rule(spec)
+            viable = [
+                item
+                for item in observed[spec.symbol]
+                if not _hard_rejection(spec, rule, item) and item.epic
+            ]
+            viable.sort(
+                key=lambda item: (_pre_score(spec, rule, item), item.epic or ""), reverse=True
+            )
+            candidates_to_fetch.extend(
+                item.epic for item in viable[: self._shortlist_limit] if item.epic
+            )
+        try:
+            self._prefetch_metadata(tuple(dict.fromkeys(candidates_to_fetch)))
+        except RuntimeError as error:
+            if not getattr(error, "classification", None):
+                raise
+            # Every result remains explicit below; no retry is attempted after an
+            # allowance/authentication error.
+            for spec in specs:
+                failed.setdefault(spec.symbol, _safe_error(error))
+
+        results: list[DQ03Resolution] = []
+        for spec in specs:
+            if spec.symbol in failed:
+                results.append(
+                    DQ03Resolution(
+                        spec.symbol,
+                        spec.asset_class,
+                        DQ03Status.METADATA_INCOMPLETE,
+                        None,
+                        spec.display_name,
+                        None,
+                        0,
+                        None,
+                        ("Read-only discovery could not be completed safely.",),
+                        (),
+                        None,
+                        DataStatus.DATA_NOT_AVAILABLE,
+                        self._clock().astimezone(UTC),
+                        error=failed[spec.symbol],
+                    )
+                )
+            else:
+                results.append(self._resolve_observed(spec, observed[spec.symbol]))
+        return tuple(results)
 
     def resolve_symbol(self, instrument: InstrumentSpec | str) -> DQ03Resolution:
         """Resolve exactly one canonical symbol without defaulting missing broker facts."""
 
-        spec = _instrument_spec(instrument)
+        return self.resolve_universe((_instrument_spec(instrument),))[0]
+
+    def _resolve_observed(
+        self, spec: InstrumentSpec, observed: tuple[_ObservedCandidate, ...]
+    ) -> DQ03Resolution:
         rule = search_rule(spec)
         observed_at = self._clock().astimezone(UTC)
-        try:
-            observed = self._collect_candidates(rule)
-        except (DQ03RequestBudgetExceeded, RuntimeError) as error:
-            return DQ03Resolution(
-                spec.symbol,
-                spec.asset_class,
-                DQ03Status.METADATA_INCOMPLETE,
-                None,
-                spec.display_name,
-                None,
-                0,
-                None,
-                ("Search could not be completed safely.",),
-                (),
-                None,
-                DataStatus.DATA_NOT_AVAILABLE,
-                observed_at,
-                error=_safe_error(error),
-            )
         if not observed:
             return _resolution(
                 spec,
@@ -165,11 +220,14 @@ class DQ03InstrumentResolver:
             observed_at=observed_at,
         )
 
-    def _collect_candidates(self, rule: InstrumentSearchRule) -> tuple[_ObservedCandidate, ...]:
+    def _collect_candidates(
+        self, spec: InstrumentSpec, rule: InstrumentSearchRule
+    ) -> tuple[_ObservedCandidate, ...]:
         by_epic: dict[str, _ObservedCandidate] = {}
         invalid: list[_ObservedCandidate] = []
         for alias in rule.aliases:
-            for candidate in self._search(alias):
+            search_candidates = self._search(alias)
+            for candidate in search_candidates:
                 epic = _text(candidate.get("epic"))
                 value = _ObservedCandidate.from_document(candidate, alias)
                 if epic is None:
@@ -177,13 +235,16 @@ class DQ03InstrumentResolver:
                     continue
                 previous = by_epic.get(epic)
                 by_epic[epic] = value if previous is None else previous.with_alias(alias)
+            # A useful canonical search already returned a compatible contract;
+            # aliases are fallbacks, not permission to repeat equivalent searches.
+            if any(not _hard_rejection(spec, rule, value) for value in by_epic.values()):
+                break
         return tuple(by_epic.values()) + tuple(invalid)
 
     def _search(self, alias: str) -> tuple[dict[str, object], ...]:
         cached = self._search_cache.get(alias)
         if cached is not None:
             return cached
-        self._consume_request()
         result = self._transport.search_markets(alias)
         if not isinstance(result, tuple) or not all(isinstance(item, Mapping) for item in result):
             raise RuntimeError("IG market search response has an invalid candidate shape")
@@ -195,9 +256,15 @@ class DQ03InstrumentResolver:
         cached = self._metadata_cache.get(epic)
         if cached is not None:
             return cached
-        self._consume_request()
-        raw = self._transport.get_market(epic)
-        self.counters.metadata_request_count += 1
+        failure = self._metadata_failures.get(epic)
+        if failure:
+            raise RuntimeError(failure)
+        try:
+            raw = self._transport.get_market(epic)
+        except RuntimeError as error:
+            self._metadata_failures[epic] = _safe_error(error)
+            raise
+        self.counters.single_metadata_request_count += 1
         try:
             metadata = metadata_from_transport(raw)
         except (AttributeError, TypeError, ValueError) as error:
@@ -207,9 +274,56 @@ class DQ03InstrumentResolver:
         self._metadata_cache[epic] = metadata
         return metadata
 
-    def _consume_request(self) -> None:
-        if self.counters.total_ig_requests >= self._request_budget:
-            raise DQ03RequestBudgetExceeded("DQ-03 IG request budget exhausted")
+    def _prefetch_metadata(self, epics: tuple[str, ...]) -> None:
+        """Fill the cache through V2 batches, with V4 only for omitted results."""
+
+        missing = [epic for epic in epics if epic not in self._metadata_cache]
+        get_markets = getattr(self._transport, "get_markets", None)
+        if callable(get_markets):
+            for start in range(0, len(missing), 10):
+                batch = tuple(missing[start : start + 10])
+                if not batch:
+                    continue
+                try:
+                    raw = get_markets(batch)
+                except RuntimeError as error:
+                    # An allowance/authentication 403 is a hard safe-stop; it
+                    # must never fan out into further V4 calls.  A non-403 V2
+                    # server failure means that batch did not provide metadata,
+                    # so one bounded V4 read per affected EPIC is the explicit
+                    # compatibility fallback, not a retry of the failed batch.
+                    if getattr(error, "classification", None):
+                        raise
+                    for epic in batch:
+                        self._metadata_or_record_failure(epic)
+                    continue
+                if not isinstance(raw, Mapping):
+                    for epic in batch:
+                        self._metadata_or_record_failure(epic)
+                    continue
+                self.counters.batched_metadata_request_count += 1
+                for epic, value in raw.items():
+                    if epic not in batch:
+                        continue
+                    metadata = metadata_from_transport(value)
+                    if metadata.epic != epic:
+                        raise RuntimeError(
+                            "IG batched market metadata EPIC does not match candidate"
+                        )
+                    self._metadata_cache[epic] = metadata
+        # IG V2 may omit an EPIC; one V4 confirmation is then an explicit
+        # fallback, never a blind retry of a failed 403 response.
+        for epic in epics:
+            if epic not in self._metadata_cache and epic not in self._metadata_failures:
+                self._metadata_or_record_failure(epic)
+
+    def _metadata_or_record_failure(self, epic: str) -> None:
+        try:
+            self._metadata(epic)
+        except RuntimeError as error:
+            if getattr(error, "classification", None):
+                raise
+            self._metadata_failures[epic] = _safe_error(error)
 
     def _evaluate_candidates(
         self,
@@ -242,14 +356,23 @@ class DQ03InstrumentResolver:
                 continue
             try:
                 metadata = self._metadata(item.epic)
-            except (DQ03RequestBudgetExceeded, RuntimeError) as error:
+            except RuntimeError as error:
                 preliminary.append(
-                    item.evidence(reasons=(f"Metadata unavailable: {_safe_error(error)}",))
+                    item.evidence(
+                        score=_pre_score(spec, rule, item),
+                        reasons=(f"Metadata unavailable: {_safe_error(error)}",),
+                    )
                 )
                 continue
             reasons = _metadata_rejection(spec, rule, item, metadata)
             if reasons:
-                preliminary.append(item.evidence(metadata=metadata, reasons=reasons))
+                preliminary.append(
+                    item.evidence(
+                        metadata=metadata,
+                        score=_pre_score(spec, rule, item),
+                        reasons=reasons,
+                    )
+                )
                 continue
             score, score_reasons = _score_candidate(spec, item, metadata)
             scored.append(_ScoredCandidate(item, metadata, score, score_reasons))
@@ -294,6 +417,7 @@ class _ObservedCandidate:
         *,
         reasons: tuple[str, ...],
         metadata: MarketMetadata | None = None,
+        score: int | None = None,
     ) -> CandidateEvidence:
         return CandidateEvidence(
             self.epic,
@@ -302,7 +426,7 @@ class _ObservedCandidate:
             self.expiry,
             self.market_status,
             self.aliases,
-            None,
+            score,
             False,
             reasons,
             metadata,
@@ -491,18 +615,37 @@ def _resolution(
     *,
     reasons: tuple[str, ...],
 ) -> DQ03Resolution:
+    retained = (
+        max(
+            (item for item in candidates if item.epic),
+            key=lambda item: (item.metadata is not None, item.score or 0, item.epic or ""),
+            default=None,
+        )
+        if status is DQ03Status.METADATA_INCOMPLETE
+        else None
+    )
+    selected = tuple(
+        replace(item, selected=retained is not None and item.epic == retained.epic)
+        for item in candidates
+    )
     return DQ03Resolution(
         spec.symbol,
         spec.asset_class,
         status,
-        None,
-        spec.display_name,
-        None,
+        retained.epic if retained else None,
+        (
+            (retained.metadata.display_name if retained.metadata else None)
+            or retained.display_name
+            or spec.display_name
+        )
+        if retained
+        else spec.display_name,
+        retained.aliases[0] if retained and retained.aliases else None,
         len(candidates),
-        None,
+        retained.score if retained else None,
         reasons,
-        candidates,
-        None,
+        selected,
+        retained.metadata if retained else None,
         DataStatus.DATA_NOT_AVAILABLE,
         observed_at,
     )

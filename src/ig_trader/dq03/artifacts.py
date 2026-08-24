@@ -5,13 +5,14 @@
 from __future__ import annotations
 
 import json
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 from src.ig_trader.dq03.models import DQ03Resolution, DQ03Status, RequestCounters
 from src.ig_trader.dq03.strategy_lab import build_strategy_lab_context
 
 ARTIFACT_SCHEMA = "dq03-instrument-resolution/1.0"
+RESOLVER_VERSION = "dq03-resolver/1.1"
 
 
 def write_dq03_artifacts(
@@ -20,6 +21,8 @@ def write_dq03_artifacts(
     counters: RequestCounters,
     *,
     streaming_result: dict[str, object] | None = None,
+    phase: str = "PHASE_1",
+    run_context: dict[str, object] | None = None,
 ) -> dict[str, Path]:
     """Write the four required ignored runtime artifacts in a deterministic shape."""
 
@@ -28,12 +31,15 @@ def write_dq03_artifacts(
         "instrument_registry.json": {
             "schema_version": ARTIFACT_SCHEMA,
             "execution_authority": "OFF",
+            "phase": phase,
+            "run_context": run_context or {},
             "instruments": [item.document() for item in resolutions],
             "strategy_lab_context": build_strategy_lab_context(resolutions),
         },
         "candidate_evidence.json": {
             "schema_version": ARTIFACT_SCHEMA,
             "execution_authority": "OFF",
+            "phase": phase,
             "instruments": [
                 {
                     "symbol": item.symbol,
@@ -46,11 +52,14 @@ def write_dq03_artifacts(
         "metadata_summary.json": {
             "schema_version": ARTIFACT_SCHEMA,
             "execution_authority": "OFF",
+            "phase": phase,
             "instruments": [_metadata_row(item) for item in resolutions],
         },
         "discovery_manifest.json": {
             "schema_version": ARTIFACT_SCHEMA,
             "generated_at_utc": datetime.now(UTC).isoformat(),
+            "phase": phase,
+            "run_context": run_context or {},
             "instrument_count": len(resolutions),
             "classification_counts": {
                 status.value: sum(item.classification is status for item in resolutions)
@@ -109,6 +118,10 @@ def _metadata_row(resolution: DQ03Resolution) -> dict[str, object]:
         "symbol": resolution.symbol,
         "classification": resolution.classification.value,
         "selected_epic": resolution.selected_epic,
+        "selected_candidate_epic": resolution.selected_epic,
+        "selected_candidate_name": resolution.display_name if resolution.selected_epic else None,
+        "candidate_score": resolution.selection_score,
+        "missing_fields": list(resolution.missing_fields),
         "display_name": resolution.display_name,
         "currency": metadata.currency if metadata else None,
         "minimum_deal_size": str(metadata.minimum_deal_size) if metadata else None,
@@ -124,3 +137,27 @@ def _metadata_row(resolution: DQ03Resolution) -> dict[str, object]:
 
 def _render(document: dict[str, object]) -> str:
     return json.dumps(document, sort_keys=True, indent=2, default=str) + "\n"
+
+
+def phase_context_matches(output_directory: Path, expected: dict[str, object]) -> bool:
+    """Allow later read-only phases only for the same fresh Demo resolution evidence."""
+
+    path = output_directory / "discovery_manifest.json"
+    try:
+        document = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return False
+    generated = document.get("generated_at_utc")
+    freshness_hours = expected.get("metadata_freshness_hours")
+    if not isinstance(generated, str) or not isinstance(freshness_hours, int):
+        return False
+    try:
+        generated_at = datetime.fromisoformat(generated.replace("Z", "+00:00")).astimezone(UTC)
+    except ValueError:
+        return False
+    fresh = datetime.now(UTC) - generated_at <= timedelta(hours=freshness_hours)
+    return fresh and (
+        document.get("phase") in {"PHASE_1", "PHASE_2"}
+        and document.get("execution_authority") == "OFF"
+        and document.get("run_context") == expected
+    )

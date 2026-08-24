@@ -11,8 +11,9 @@ from decimal import Decimal
 from pathlib import Path
 
 from src.ig_trader.dq03.acquisition import DQ03HistoryAcquirer
-from src.ig_trader.dq03.artifacts import write_dq03_artifacts
+from src.ig_trader.dq03.artifacts import phase_context_matches, write_dq03_artifacts
 from src.ig_trader.dq03.models import DataStatus, DQ03Status, RequestCounters
+from src.ig_trader.dq03.phases import phase_context
 from src.ig_trader.dq03.registry import SEARCH_REGISTRY
 from src.ig_trader.dq03.resolver import DQ03InstrumentResolver
 from src.ig_trader.dq03.strategy_lab import build_strategy_lab_context
@@ -107,6 +108,7 @@ def test_weekend_and_unrelated_security_candidates_are_hard_rejected() -> None:
         "Gold": (
             _candidate("IX.D.SUNGOLD.CEF.IP", "Weekend Spot Gold", "COMMODITIES"),
             _candidate("CS.D.GOLDMINE.IP", "Gold Mining PLC share", "SHARES"),
+            _candidate("CS.D.GOLDCORP.IP", "Golden Ocean Group Ltd", "SHARES"),
         )
     }
     result = DQ03InstrumentResolver(FakeTransport(searches, {}), clock=lambda: NOW).resolve_symbol(
@@ -123,6 +125,19 @@ def test_weekend_and_unrelated_security_candidates_are_hard_rejected() -> None:
         for candidate in result.candidates
         for reason in candidate.reasons
     )
+
+
+def test_french_us_crude_identity_is_an_explicit_energy_alias() -> None:
+    epic = "CC.D.CL.UEF.IP"
+    searches = {"US Crude": (_candidate(epic, "Pétrole - US Brut Léger (1$)", "COMMODITIES"),)}
+    market = FakeMarket(epic, "Pétrole - US Brut Léger (1$)", "COMMODITIES")
+
+    result = DQ03InstrumentResolver(
+        FakeTransport(searches, {epic: market}), clock=lambda: NOW
+    ).resolve_symbol("USCRUDE")
+
+    assert result.classification is DQ03Status.VERIFIED
+    assert result.selected_epic == epic
 
 
 def test_fx_mini_preference_selects_mini_contract_after_complete_metadata() -> None:
@@ -204,6 +219,19 @@ def test_equal_metal_spot_contracts_remain_ambiguous_without_currency_guessing()
     assert result.selected_epic is None
 
 
+def test_identity_proven_precious_metal_can_use_ig_currencies_type() -> None:
+    epic = "CS.D.CFDSILVER.CFM.IP"
+    searches = {"Silver": (_candidate(epic, "Argent au comptant mini", "CURRENCIES"),)}
+    market = FakeMarket(epic, "Argent au comptant mini", "CURRENCIES")
+
+    result = DQ03InstrumentResolver(
+        FakeTransport(searches, {epic: market}), clock=lambda: NOW
+    ).resolve_symbol("XAGUSD")
+
+    assert result.classification is DQ03Status.VERIFIED
+    assert result.selected_epic == epic
+
+
 def test_missing_dealing_metadata_blocks_selection_without_defaults() -> None:
     epic = "CS.D.EURUSD.CEFM.IP"
     searches = {"EURUSD": (_candidate(epic, "EUR/USD Mini", "CURRENCIES"),), "EUR/USD": ()}
@@ -213,7 +241,9 @@ def test_missing_dealing_metadata_blocks_selection_without_defaults() -> None:
     ).resolve_symbol("EURUSD")
 
     assert result.classification is DQ03Status.METADATA_INCOMPLETE
-    assert result.selected_epic is None
+    assert result.selected_epic == epic
+    assert result.metadata is not None
+    assert result.metadata.missing_fields == ("streaming_prices_available",)
 
 
 def test_energy_identity_rejects_brent_when_resolving_us_crude() -> None:
@@ -247,7 +277,7 @@ def test_search_and_metadata_are_cached_and_history_quota_is_enforced() -> None:
 
     assert first.classification is DQ03Status.VERIFIED
     assert second.classification is DQ03Status.VERIFIED
-    assert transport.search_calls == ["EURUSD", "EUR/USD"]
+    assert transport.search_calls == ["EURUSD"]
     assert transport.market_calls == [epic]
     updated, samples = DQ03HistoryAcquirer(
         transport, resolver.counters, request_budget=1, point_budget=2
@@ -278,6 +308,16 @@ def test_all_26_symbols_and_required_sanitized_artifacts_are_retained(tmp_path: 
     assert manifest["demo_create_calls"] == manifest["demo_close_calls"] == 0
 
 
+def test_phase_one_artifacts_require_matching_sanitized_demo_context(tmp_path: Path) -> None:
+    transport = FakeTransport({}, {})
+    results = DQ03InstrumentResolver(transport, clock=lambda: NOW).resolve_universe()
+    context = phase_context("DEMO-TEST")
+    write_dq03_artifacts(tmp_path, results, RequestCounters(), run_context=context)
+
+    assert phase_context_matches(tmp_path, context)
+    assert not phase_context_matches(tmp_path, phase_context("DIFFERENT-DEMO-TEST"))
+
+
 def test_cli_is_network_mockable_and_only_writes_ignored_local_evidence(
     monkeypatch, tmp_path: Path, capsys
 ) -> None:
@@ -288,7 +328,7 @@ def test_cli_is_network_mockable_and_only_writes_ignored_local_evidence(
         {"EURUSD": (_candidate(epic, "EUR/USD Mini", "CURRENCIES"),), "EUR/USD": ()},
         {epic: FakeMarket(epic, "EUR/USD Mini", "CURRENCIES")},
     )
-    monkeypatch.setattr(cli, "_read_only_preflight", lambda: (transport, RequestCounters()))
+    monkeypatch.setattr(cli, "_read_only_preflight", lambda *_: (transport, "DEMO-TEST"))
 
     assert cli.main(["resolve", "--symbol", "EURUSD", "--output-directory", str(tmp_path)]) == 0
     assert "DQ03_READ_ONLY_COMPLETE" in capsys.readouterr().out

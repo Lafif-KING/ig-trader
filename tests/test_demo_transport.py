@@ -12,6 +12,7 @@ from src.ig_trader.demo_execution import DemoDirection
 from src.ig_trader.demo_transport import (
     IG_DEMO_BASE_URL,
     DemoTransportError,
+    IGDemo403Error,
     IGDemoRESTTransport,
     validate_ig_demo_endpoint,
 )
@@ -166,3 +167,92 @@ def test_transport_source_never_logs_authentication_values() -> None:
         encoding="utf-8"
     )
     assert "logger" not in source
+
+
+def test_market_parser_uses_default_currency_text_pip_and_ask_shape() -> None:
+    session = FakeSession(
+        httpx.Response(
+            200,
+            json={
+                "instrument": {
+                    "name": "EUR/USD Mini",
+                    "type": "CURRENCIES",
+                    "expiry": "-",
+                    "currencies": [
+                        {"code": "EUR", "isDefault": False},
+                        {"code": "USD", "isDefault": True},
+                    ],
+                    "onePipMeans": "0.0001 USD",
+                    "valueOfOnePip": "1.00",
+                    "streamingPricesAvailable": True,
+                    "contractSize": "10000",
+                    "lotSize": "1",
+                },
+                "snapshot": {
+                    "marketStatus": "TRADEABLE",
+                    "decimalPlacesFactor": 5,
+                    "scalingFactor": 1,
+                    "bid": "1.10000",
+                    "ask": "1.10020",
+                },
+                "dealingRules": {
+                    "minDealSize": {"unit": "POINTS", "value": "0.1"},
+                    "minNormalStopOrLimitDistance": {"unit": "POINTS", "value": "2"},
+                },
+            },
+        )
+    )
+    metadata = IGDemoRESTTransport(session=session, base_url=IG_DEMO_BASE_URL).get_market("CS.TEST")
+
+    assert metadata.currency == "USD"
+    assert metadata.pip_or_tick_size == Decimal("0.0001")
+    assert metadata.offer == Decimal("1.10020")
+    assert metadata.minimum_stop_distance_unit == "POINTS"
+    assert metadata.contract_size == Decimal("10000")
+
+
+def test_percentage_dealing_rule_is_retained_as_unit_but_not_invented_as_points() -> None:
+    session = FakeSession(
+        httpx.Response(
+            200,
+            json={
+                "instrument": {"currencies": [{"code": "USD", "isDefault": True}]},
+                "snapshot": {},
+                "dealingRules": {
+                    "minDealSize": {"unit": "PERCENTAGE", "value": "1"},
+                    "minNormalStopOrLimitDistance": {"unit": "PERCENTAGE", "value": "2"},
+                },
+            },
+        )
+    )
+    metadata = IGDemoRESTTransport(session=session, base_url=IG_DEMO_BASE_URL).get_market("CS.TEST")
+
+    assert metadata.minimum_deal_size is None
+    assert metadata.minimum_stop_distance is None
+    assert metadata.minimum_deal_size_unit == "PERCENTAGE"
+    assert metadata.minimum_stop_distance_unit == "PERCENTAGE"
+
+
+@pytest.mark.parametrize(
+    ("error_code", "classification"),
+    [
+        ("error.public-api.exceeded-account-allowance", "RATE_LIMIT_ACCOUNT"),
+        ("error.public-api.exceeded-api-key-allowance", "RATE_LIMIT_API_KEY"),
+        ("error.public-api.exceeded-account-historical-data-allowance", "HISTORICAL_ALLOWANCE"),
+        ("error.security.api-key-restricted", "API_KEY_INVALID_OR_RESTRICTED"),
+    ],
+)
+def test_403_is_classified_once_without_a_blind_retry(error_code: str, classification: str) -> None:
+    session = FakeSession(httpx.Response(403, json={"errorCode": error_code}))
+    seen: list[str] = []
+    transport = IGDemoRESTTransport(
+        session=session,
+        base_url=IG_DEMO_BASE_URL,
+        error_observer=lambda error: seen.append(error.classification),
+    )
+
+    with pytest.raises(IGDemo403Error, match=classification):
+        transport.search_markets("EURUSD")
+
+    assert seen == [classification]
+    assert len(session.calls) == 1
