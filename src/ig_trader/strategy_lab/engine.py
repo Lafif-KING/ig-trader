@@ -42,6 +42,9 @@ class FrictionModel:
 
     Commission is a price-distance-equivalent supplied by the data/research
     configuration.  It is never inferred from a generic FX pip convention.
+    Every distance here is a raw market-price distance. Broker-native dealing
+    rule units must be converted in the evidence boundary before this contract
+    is constructed.
     """
 
     tick_size: Decimal | None

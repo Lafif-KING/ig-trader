@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import random
-from dataclasses import asdict, dataclass, replace
+from dataclasses import asdict, dataclass, field, replace
 from datetime import UTC, datetime
 from decimal import Decimal
 from math import sqrt
@@ -83,6 +83,11 @@ class SignalFunnel:
     entries_taken: int
     completed_trades: int
     oos_trades: int
+    signals_rejected_by_minimum_stop: int = 0
+    signals_rejected_by_cost_or_spread: int = 0
+    minimum_stop_rejection_diagnostics: dict[str, Decimal | int | None] = field(
+        default_factory=dict
+    )
 
 
 @dataclass(frozen=True)
@@ -466,6 +471,13 @@ class SL03Runner:
                 "signals_rejected_by_cost_or_minimum_stop": (
                     test.funnel.signals_rejected_by_cost_or_minimum_stop
                 ),
+                "signals_rejected_by_minimum_stop": (test.funnel.signals_rejected_by_minimum_stop),
+                "signals_rejected_by_cost_or_spread": (
+                    test.funnel.signals_rejected_by_cost_or_spread
+                ),
+                "minimum_stop_rejection_diagnostics": (
+                    test.funnel.minimum_stop_rejection_diagnostics
+                ),
                 "signals_while_trade_open": test.funnel.signals_while_trade_open,
                 "entries_taken": test.funnel.entries_taken,
             }
@@ -482,7 +494,8 @@ class SL03Runner:
                     "0: current deterministic rules embed regime logic; no extra filter was added."
                 ),
                 "cost_rule_note": (
-                    "Signals below DQ-03 minimum stop distance are rejected, not resized."
+                    "Signals below the normalized DQ-03 minimum stop price distance are "
+                    "rejected, not resized. No separate spread/cost eligibility rule exists."
                 ),
             },
             walk_forward={
@@ -544,7 +557,8 @@ def _simulate(
     assert friction.minimum_stop_distance is not None
     candles = dataset.candles
     trades = []
-    raw = rejected_session = rejected_cost = open_signals = entries = 0
+    raw = rejected_session = rejected_minimum_stop = open_signals = entries = 0
+    rejected_stop_distances: list[Decimal] = []
     next_available = 21
     for index in range(21, len(candles) - 1):
         signal = strategy.signal(candles[: index + 1])
@@ -558,7 +572,8 @@ def _simulate(
             rejected_session += 1
             continue
         if signal.stop_distance < friction.minimum_stop_distance:
-            rejected_cost += 1
+            rejected_minimum_stop += 1
+            rejected_stop_distances.append(signal.stop_distance)
             continue
         trade, exit_index = engine._simulate_trade(
             candles,
@@ -588,13 +603,45 @@ def _simulate(
             raw_strategy_signals=raw,
             signals_rejected_by_regime_filter=0,
             signals_rejected_by_session_filter=rejected_session,
-            signals_rejected_by_cost_or_minimum_stop=rejected_cost,
+            signals_rejected_by_cost_or_minimum_stop=rejected_minimum_stop,
             signals_while_trade_open=open_signals,
             entries_taken=entries,
             completed_trades=len(trades),
             oos_trades=len(trades),
+            signals_rejected_by_minimum_stop=rejected_minimum_stop,
+            signals_rejected_by_cost_or_spread=0,
+            minimum_stop_rejection_diagnostics=_minimum_stop_diagnostics(
+                rejected_stop_distances, friction.minimum_stop_distance
+            ),
         ),
     )
+
+
+def _minimum_stop_diagnostics(
+    rejected_stop_distances: list[Decimal], broker_minimum_stop_price: Decimal
+) -> dict[str, Decimal | int | None]:
+    """Aggregate raw-price stop diagnostics for one instrument/strategy/timeframe."""
+
+    if not rejected_stop_distances:
+        return {
+            "rejection_count": 0,
+            "broker_minimum_stop_price": broker_minimum_stop_price,
+            "strategy_stop_distance_price_min": None,
+            "strategy_stop_distance_price_max": None,
+            "ratio_strategy_stop_to_minimum_min": None,
+            "ratio_strategy_stop_to_minimum_max": None,
+            "ratio_strategy_stop_to_minimum_median": None,
+        }
+    ratios = sorted(distance / broker_minimum_stop_price for distance in rejected_stop_distances)
+    return {
+        "rejection_count": len(rejected_stop_distances),
+        "broker_minimum_stop_price": broker_minimum_stop_price,
+        "strategy_stop_distance_price_min": min(rejected_stop_distances),
+        "strategy_stop_distance_price_max": max(rejected_stop_distances),
+        "ratio_strategy_stop_to_minimum_min": ratios[0],
+        "ratio_strategy_stop_to_minimum_max": ratios[-1],
+        "ratio_strategy_stop_to_minimum_median": Decimal(str(median(ratios))),
+    }
 
 
 def _select(

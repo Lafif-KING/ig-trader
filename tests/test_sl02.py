@@ -9,8 +9,14 @@ from pathlib import Path
 
 import pytest
 
-from src.ig_trader.sl02.contracts import AcquiredDataset, DatasetDepthStatus
+from src.ig_trader.sl02.contracts import (
+    AcquiredDataset,
+    BrokerEvidence,
+    CostEvidence,
+    DatasetDepthStatus,
+)
 from src.ig_trader.sl02.costs import (
+    broker_minimum_stop_price_distance,
     friction_model,
     generate_research_cost_model,
     load_cost_evidence,
@@ -107,7 +113,10 @@ def test_dq03_evidence_alignment_and_cost_model_require_matching_fingerprint(
                             "epic": "CS.D.TEST.IP",
                             "one_pip_means": "0.0001",
                             "minimum_deal_size": "1",
-                            "minimum_stop_distance": "0.0005",
+                            "minimum_stop_distance": "5",
+                            "minimum_stop_distance_unit": "POINTS",
+                            "decimal_places": 5,
+                            "scaling_factor": 10000,
                             "spread": "0.0002",
                             "currency": "USD",
                             "expiry": "-",
@@ -161,6 +170,11 @@ def test_dq03_evidence_alignment_and_cost_model_require_matching_fingerprint(
         output_path=tmp_path / "cost.json",
     )
     evidence = load_dq03_evidence(tmp_path)["EURUSD"]
+    assert evidence.minimum_stop_distance_value == Decimal("5")
+    assert evidence.minimum_stop_distance_unit == "POINTS"
+    assert evidence.decimal_places == 5
+    assert evidence.scaling_factor == 10000
+    assert broker_minimum_stop_price_distance(evidence) == Decimal("0.0005")
     matching = _dataset("EURUSD", Timeframe.H1)
     matching_candle = matching.candles[0]
     matching = build_dataset(
@@ -189,6 +203,100 @@ def test_dq03_evidence_alignment_and_cost_model_require_matching_fingerprint(
         load_cost_evidence(tmp_path / "cost.json")["EURUSD"],
         stress_multiplier=Decimal("1"),
     ).complete
+
+
+def _broker_distance_evidence(
+    *,
+    value: str,
+    unit: str | None = "POINTS",
+    pip: str | None = "0.0001",
+    decimal_places: int | None = 5,
+    scaling_factor: int | None = 10000,
+) -> BrokerEvidence:
+    return BrokerEvidence(
+        symbol="TEST",
+        epic="CS.D.TEST.IP",
+        metadata_fingerprint="a" * 64,
+        broker_validation_fingerprint="b" * 64,
+        data_status="BROKER_VALIDATED",
+        cost_model_status="BROKER_VALIDATED",
+        pip_or_tick_size=Decimal(pip) if pip is not None else None,
+        minimum_deal_size=Decimal("1"),
+        minimum_stop_distance=Decimal(value),
+        observed_spread=Decimal("0.0001"),
+        currency="USD",
+        minimum_stop_distance_value=Decimal(value),
+        minimum_stop_distance_unit=unit,
+        decimal_places=decimal_places,
+        scaling_factor=scaling_factor,
+    )
+
+
+@pytest.mark.parametrize(
+    ("symbol", "value", "pip", "decimal_places", "scaling_factor", "expected"),
+    [
+        ("EURUSD", "2", "0.0001", 5, 10000, "0.0002"),
+        ("GBPUSD", "4", "0.0001", 5, 10000, "0.0004"),
+        ("EURGBP", "2", "0.0001", 5, 10000, "0.0002"),
+        ("USDJPY", "2", "0.01", 3, 100, "0.02"),
+        ("EURJPY", "4", "0.01", 3, 100, "0.04"),
+        ("XAUUSD", "1", "1", 2, 1, "1"),
+        ("XAGUSD", "4", "1", 3, 100, "4"),
+        ("US500", "1", "1", 2, 1, "1"),
+        ("USTECH100", "4", "1", 1, 1, "4"),
+    ],
+)
+def test_ig_points_rules_normalize_to_raw_market_price_distance(
+    symbol: str,
+    value: str,
+    pip: str,
+    decimal_places: int,
+    scaling_factor: int,
+    expected: str,
+) -> None:
+    """Sanitized DQ-03 representative contracts retain their native IG values."""
+
+    evidence = _broker_distance_evidence(
+        value=value,
+        pip=pip,
+        decimal_places=decimal_places,
+        scaling_factor=scaling_factor,
+    )
+    evidence = BrokerEvidence(**{**evidence.__dict__, "symbol": symbol})
+
+    assert broker_minimum_stop_price_distance(evidence) == Decimal(expected)
+
+
+def test_percentage_rule_requires_explicit_price_and_static_model_fails_closed() -> None:
+    evidence = _broker_distance_evidence(value="2", unit="PERCENTAGE")
+    cost = CostEvidence(
+        symbol="TEST",
+        metadata_fingerprint="a" * 64,
+        base_spread=Decimal("0.0001"),
+        slippage=Decimal("0.0001"),
+        commission_price_equivalent=Decimal("0"),
+        allowed_utc_hours=frozenset(range(24)),
+        evidence_basis="Synthetic unit-regression evidence only.",
+    )
+
+    assert broker_minimum_stop_price_distance(evidence) is None
+    assert broker_minimum_stop_price_distance(
+        evidence, reference_price=Decimal("1.20000")
+    ) == Decimal("0.02400")
+    assert friction_model(evidence, cost, stress_multiplier=Decimal("1")) is None
+
+
+@pytest.mark.parametrize(
+    "evidence",
+    [
+        _broker_distance_evidence(value="2", unit="TICKS"),
+        _broker_distance_evidence(value="2", pip=None),
+        _broker_distance_evidence(value="2", scaling_factor=None),
+        _broker_distance_evidence(value="2", decimal_places=None),
+    ],
+)
+def test_unprovable_broker_stop_conversion_fails_closed(evidence: BrokerEvidence) -> None:
+    assert broker_minimum_stop_price_distance(evidence) is None
 
 
 def test_sl02_runner_writes_full_artifact_set_and_blocks_missing_cost_evidence(

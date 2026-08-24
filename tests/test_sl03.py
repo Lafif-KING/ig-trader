@@ -143,7 +143,12 @@ def test_signal_funnel_rejects_subminimum_stops_without_resizing() -> None:
     )
     simulation = _simulate(dataset, strategy, friction, CandleBacktestEngine())
     assert simulation.funnel.raw_strategy_signals > 0
-    assert simulation.funnel.signals_rejected_by_cost_or_minimum_stop > 0
+    assert simulation.funnel.signals_rejected_by_minimum_stop > 0
+    assert simulation.funnel.signals_rejected_by_cost_or_spread == 0
+    assert simulation.funnel.signals_rejected_by_cost_or_minimum_stop == (
+        simulation.funnel.signals_rejected_by_minimum_stop
+    )
+    assert simulation.funnel.minimum_stop_rejection_diagnostics["broker_minimum_stop_price"] == 1
     assert simulation.funnel.entries_taken == 0
 
 

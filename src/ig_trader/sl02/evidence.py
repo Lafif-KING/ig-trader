@@ -210,12 +210,21 @@ def _validate_required_row(
     pip_or_tick = _decimal(metadata.get("one_pip_means"))
     minimum_size = _decimal(metadata.get("minimum_deal_size"))
     minimum_stop = _decimal(metadata.get("minimum_stop_distance"))
+    minimum_stop_unit = _text(metadata.get("minimum_stop_distance_unit"))
+    decimal_places = _nonnegative_int_or_none(metadata.get("decimal_places"))
+    scaling_factor = _positive_int_or_none(metadata.get("scaling_factor"))
     if pip_or_tick is None or pip_or_tick <= 0:
         cost_inputs.append("PIP_OR_TICK_SIZE_MISSING")
     if minimum_size is None or minimum_size <= 0:
         cost_inputs.append("MINIMUM_DEAL_SIZE_MISSING")
     if minimum_stop is None or minimum_stop < 0:
         cost_inputs.append("MINIMUM_STOP_DISTANCE_MISSING")
+    if minimum_stop_unit is None:
+        cost_inputs.append("MINIMUM_STOP_DISTANCE_UNIT_MISSING")
+    if decimal_places is None:
+        cost_inputs.append("DECIMAL_PLACES_MISSING")
+    if scaling_factor is None:
+        cost_inputs.append("SCALING_FACTOR_MISSING")
     currency = _text(metadata.get("currency"))
     if currency is None or len(currency) != 3:
         cost_inputs.append("CURRENCY_MISSING")
@@ -256,6 +265,10 @@ def _broker_evidence(
         observed_spreads=tuple(point.spread for point in points if point.spread is not None),
         asset_class=_text(value.get("asset_class")),
         expiry=_text(metadata.get("expiry")),
+        minimum_stop_distance_value=_decimal(metadata.get("minimum_stop_distance")),
+        minimum_stop_distance_unit=_text(metadata.get("minimum_stop_distance_unit")),
+        decimal_places=_nonnegative_int_or_none(metadata.get("decimal_places")),
+        scaling_factor=_positive_int_or_none(metadata.get("scaling_factor")),
     )
 
 
@@ -392,6 +405,21 @@ def _nonnegative_int(value: object) -> int:
         return int(value) if value is not None else 0
     except (TypeError, ValueError):
         return 0
+
+
+def _nonnegative_int_or_none(value: object) -> int | None:
+    if isinstance(value, bool):
+        return None
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        return None
+    return parsed if parsed >= 0 else None
+
+
+def _positive_int_or_none(value: object) -> int | None:
+    parsed = _nonnegative_int_or_none(value)
+    return parsed if parsed is not None and parsed > 0 else None
 
 
 def _text(value: object) -> str | None:

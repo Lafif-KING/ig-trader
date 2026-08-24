@@ -32,7 +32,13 @@ class BrokerValidationPoint:
 
 @dataclass(frozen=True)
 class BrokerEvidence:
-    """Sanitized DQ-03 facts. Missing values are deliberately represented as None."""
+    """Sanitized DQ-03 facts. Missing values are deliberately represented as None.
+
+    ``minimum_stop_distance`` is the legacy name for the broker-native dealing
+    rule value; it is not a raw market-price distance.  The explicit native
+    fields below retain the DQ-03 document unchanged so a research-only
+    conversion boundary can fail closed before simulation.
+    """
 
     symbol: str
     epic: str | None
@@ -49,6 +55,10 @@ class BrokerEvidence:
     observed_spreads: tuple[Decimal, ...] = ()
     asset_class: str | None = None
     expiry: str | None = None
+    minimum_stop_distance_value: Decimal | None = None
+    minimum_stop_distance_unit: str | None = None
+    decimal_places: int | None = None
+    scaling_factor: int | None = None
 
 
 @dataclass(frozen=True)

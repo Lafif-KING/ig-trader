@@ -13,6 +13,7 @@ from src.ig_trader.strategy_lab.engine import FrictionModel
 
 IG_CASH_MARKET_COMMISSION_SOURCE = "https://deal.ig.com/content/files/CFD_2.pdf"
 _RESEARCH_ALLOWED_UTC_HOURS = tuple(range(24))
+_RAW_PRICE_DISTANCE = "RAW_MARKET_PRICE_DISTANCE"
 
 
 def generate_research_cost_model(
@@ -39,6 +40,8 @@ def generate_research_cost_model(
         assert broker is not None
         assert broker.metadata_fingerprint is not None
         assert broker.pip_or_tick_size is not None
+        minimum_stop_distance = broker_minimum_stop_price_distance(broker)
+        assert minimum_stop_distance is not None
         base_spread = _conservative_spread(broker.observed_spreads, broker.observed_spread)
         slippage = max(broker.pip_or_tick_size, base_spread * Decimal("0.25"))
         instruments.append(
@@ -46,10 +49,18 @@ def generate_research_cost_model(
                 "symbol": symbol,
                 "metadata_fingerprint": broker.metadata_fingerprint,
                 "base_spread": base_spread,
+                "base_spread_unit": _RAW_PRICE_DISTANCE,
                 "spread_statistic": "MAX_OF_DQ03_75TH_PERCENTILE_AND_METADATA_SNAPSHOT",
                 "observed_spread_count": len(broker.observed_spreads),
                 "slippage": slippage,
+                "slippage_unit": _RAW_PRICE_DISTANCE,
                 "commission_price_equivalent": Decimal("0"),
+                "commission_price_equivalent_unit": _RAW_PRICE_DISTANCE,
+                "tick_size": broker.pip_or_tick_size,
+                "tick_size_unit": _RAW_PRICE_DISTANCE,
+                "minimum_stop_distance": minimum_stop_distance,
+                "minimum_stop_distance_unit": _RAW_PRICE_DISTANCE,
+                "broker_minimum_stop": _broker_minimum_stop_document(broker, minimum_stop_distance),
                 "commission_evidence": {
                     "source_type": "AUTHORITATIVE_IG_FEE_DOCUMENTATION",
                     "source_url": IG_CASH_MARKET_COMMISSION_SOURCE,
@@ -65,8 +76,9 @@ def generate_research_cost_model(
                 "allowed_utc_hours": list(_RESEARCH_ALLOWED_UTC_HOURS),
                 "evidence_basis": (
                     "Broker fact: DQ-03 BROKER_VALIDATED observed spreads and matching "
-                    "metadata fingerprint. Research assumption: slippage is max(one tick, "
-                    "25% of base spread), fixed before simulation and not performance-tuned."
+                    "metadata fingerprint. Bid/ask spreads are already raw market-price "
+                    "distances. Research assumption: slippage is max(one raw tick, 25% of "
+                    "base spread), fixed before simulation and not performance-tuned."
                 ),
                 "review_state": "DETERMINISTIC_RESEARCH_MODEL_NOT_EXECUTION_APPROVED",
             }
@@ -80,6 +92,17 @@ def generate_research_cost_model(
                 "max(DQ-03 75th-percentile observed close spread, DQ-03 metadata spread snapshot)"
             ),
             "slippage": "max(DQ-03 pip/tick size, 25% of selected base spread)",
+            "distance_dimensions": {
+                "tick_size": _RAW_PRICE_DISTANCE,
+                "spread": _RAW_PRICE_DISTANCE,
+                "slippage": _RAW_PRICE_DISTANCE,
+                "commission_price_equivalent": _RAW_PRICE_DISTANCE,
+                "minimum_stop_distance": _RAW_PRICE_DISTANCE,
+                "minimum_stop_conversion": (
+                    "IG POINTS dealing-rule value multiplied by the preserved "
+                    "onePipMeans price magnitude; incomplete or non-static rules fail closed."
+                ),
+            },
             "commission": (
                 "zero only for documented DQ-03 cash FX, cash index, and spot metal contracts"
             ),
@@ -162,13 +185,14 @@ def friction_model(
 ) -> FrictionModel | None:
     """Build friction only from matching broker facts and reviewed cost evidence."""
 
+    minimum_stop_distance = broker_minimum_stop_price_distance(broker)
     if (
         broker is None
         or cost is None
         or not broker.metadata_fingerprint
         or broker.metadata_fingerprint != cost.metadata_fingerprint
         or broker.pip_or_tick_size is None
-        or broker.minimum_stop_distance is None
+        or minimum_stop_distance is None
         or broker.minimum_deal_size is None
         or broker.data_status != "BROKER_VALIDATED"
     ):
@@ -178,7 +202,7 @@ def friction_model(
         typical_spread=cost.base_spread * stress_multiplier,
         slippage=cost.slippage * stress_multiplier,
         commission_price_equivalent=cost.commission_price_equivalent,
-        minimum_stop_distance=broker.minimum_stop_distance,
+        minimum_stop_distance=minimum_stop_distance,
         minimum_size=broker.minimum_deal_size,
         allowed_utc_hours=cost.allowed_utc_hours,
     )
@@ -194,11 +218,88 @@ def _generation_issues(broker: BrokerEvidence | None) -> list[str]:
         issues.append("BROKER_VALIDATION_REQUIRED")
     if broker.pip_or_tick_size is None or broker.pip_or_tick_size <= 0:
         issues.append("PIP_OR_TICK_SIZE_MISSING")
+    if broker_minimum_stop_price_distance(broker) is None:
+        issues.append("MINIMUM_STOP_DISTANCE_NOT_CONVERTIBLE_TO_RAW_PRICE")
     if not broker.observed_spreads or any(value <= 0 for value in broker.observed_spreads):
         issues.append("OBSERVED_SPREAD_ROWS_MISSING")
     if broker.asset_class not in {"FX", "METAL", "INDEX"} or broker.expiry != "-":
         issues.append("COMMISSION_DOCUMENTATION_NOT_APPLICABLE")
     return issues
+
+
+def broker_minimum_stop_price_distance(
+    broker: BrokerEvidence | None,
+    *,
+    reference_price: Decimal | None = None,
+) -> Decimal | None:
+    """Convert preserved IG dealing-rule evidence to a raw market-price distance.
+
+    IG documents dealing-rule values with a unit and separately documents
+    ``onePipMeans`` as the market-price meaning of one pip.  A reviewed
+    ``POINTS`` rule therefore becomes ``value * onePipMeans``.  A percentage
+    rule is level-dependent, so it is deliberately unavailable to the static
+    ``FrictionModel`` unless an explicit verified reference price is supplied.
+    Unknown units, incomplete scale facts, and values requiring invented
+    rounding return ``None`` and block research as ``COST_MODEL_INCOMPLETE``.
+    """
+
+    if broker is None:
+        return None
+    value = broker.minimum_stop_distance_value
+    if value is None:
+        value = broker.minimum_stop_distance
+    if value is None or value < 0 or not _has_usable_price_scale(broker):
+        return None
+    unit = broker.minimum_stop_distance_unit
+    if unit is None:
+        return None
+    normalized_unit = unit.upper()
+    if normalized_unit == "POINTS":
+        assert broker.pip_or_tick_size is not None
+        distance = value * broker.pip_or_tick_size
+    elif normalized_unit == "PERCENTAGE":
+        if reference_price is None or reference_price <= 0:
+            return None
+        distance = reference_price * value / Decimal("100")
+    else:
+        return None
+    return distance if _is_price_precision_representable(distance, broker.decimal_places) else None
+
+
+def _broker_minimum_stop_document(
+    broker: BrokerEvidence, normalized_distance: Decimal
+) -> dict[str, object]:
+    return {
+        "minimum_stop_distance_value": (
+            broker.minimum_stop_distance_value
+            if broker.minimum_stop_distance_value is not None
+            else broker.minimum_stop_distance
+        ),
+        "minimum_stop_distance_unit": broker.minimum_stop_distance_unit,
+        "one_pip_means": broker.pip_or_tick_size,
+        "decimal_places": broker.decimal_places,
+        "scaling_factor": broker.scaling_factor,
+        "normalized_minimum_stop_price_distance": normalized_distance,
+        "conversion": "POINTS * onePipMeans",
+    }
+
+
+def _has_usable_price_scale(broker: BrokerEvidence) -> bool:
+    return (
+        broker.pip_or_tick_size is not None
+        and broker.pip_or_tick_size > 0
+        and broker.decimal_places is not None
+        and broker.decimal_places >= 0
+        and broker.scaling_factor is not None
+        and broker.scaling_factor > 0
+    )
+
+
+def _is_price_precision_representable(distance: Decimal, decimal_places: int | None) -> bool:
+    if decimal_places is None or decimal_places < 0 or distance < 0:
+        return False
+    precision = Decimal(1).scaleb(-decimal_places)
+    return (distance / precision) == (distance / precision).to_integral_value()
 
 
 def _conservative_spread(values: tuple[Decimal, ...], snapshot: Decimal | None) -> Decimal:
