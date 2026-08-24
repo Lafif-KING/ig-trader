@@ -60,10 +60,24 @@ orders, and positions are all 0.
   cache; external structured data is never labelled as IG data.
 - Every external dataset records provider, acquisition time, source and dataset
   fingerprints, UTC range, gaps, depth, and any measurable DQ-03 overlap.
-  Missing DQ-03 broker samples, metadata, or reviewed cost evidence fail closed.
+  SL-02 first validates the supplied sanitized DQ-03 registry and history
+  documents directly in place. Missing or malformed broker evidence stops as
+  `SL02_BROKER_EVIDENCE_REQUIRED` before any 384-combination batch is written.
+- The deterministic research cost model binds every entry to its DQ-03 metadata
+  fingerprint. It uses conservative observed broker spreads, a disclosed
+  fixed slippage assumption, and records the authoritative IG fee source for
+  any zero-commission cash-market model. It is never execution approval.
 - S0 remains frozen. S1-S7 use small recorded grids, chronological selection,
   walk-forward OOS evidence, and base/+25%/+50% friction stress only when a
   fingerprint-bound cost model has been supplied.
+- Results distinguish `PRE_SIMULATION_BLOCKED` from
+  `SIMULATED_AND_FAILED`; validation blockers are not reported as negative
+  strategy outcomes. Candidate artifacts remain research-only.
+- The latest ignored local run loaded 20 VERIFIED/BROKER_VALIDATED DQ-03
+  contracts and 20 matching research cost entries. It simulated 50 of 384
+  combinations; 334 combinations were pre-simulation blocked by recorded
+  data-quality, depth, or source-alignment facts. It produced no
+  Demo-qualification candidate and left execution authority OFF.
 - SL-02 can only write ignored research artifacts and a Demo candidate registry
   with `execution_authority: OFF`; it cannot construct an IG order client.
 

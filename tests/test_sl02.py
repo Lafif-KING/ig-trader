@@ -7,10 +7,12 @@ from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
 
+import pytest
+
 from src.ig_trader.sl02.contracts import AcquiredDataset, DatasetDepthStatus
-from src.ig_trader.sl02.costs import friction_model, load_cost_evidence
-from src.ig_trader.sl02.evidence import compare_with_broker_sample, load_dq03_evidence
-from src.ig_trader.sl02.runner import SL02Runner
+from src.ig_trader.sl02.costs import generate_research_cost_model, friction_model, load_cost_evidence
+from src.ig_trader.sl02.evidence import compare_with_broker_sample, load_dq03_evidence, preflight_dq03_evidence
+from src.ig_trader.sl02.runner import SL02BrokerEvidenceRequired, SL02Runner
 from src.ig_trader.strategy_lab.data import (
     GapClassification,
     LabCandle,
@@ -84,19 +86,26 @@ def test_dq03_evidence_alignment_and_cost_model_require_matching_fingerprint(tmp
                 "instruments": [
                     {
                         "canonical_symbol": "EURUSD",
+                        "asset_class": "FX",
+                        "classification": "VERIFIED",
                         "selected_epic": "CS.D.TEST.IP",
                         "metadata_fingerprint": fingerprint,
                         "broker_validation_fingerprint": "c" * 64,
                         "data_status": "BROKER_VALIDATED",
                         "cost_model_status": "BROKER_VALIDATED",
                         "metadata": {
+                            "epic": "CS.D.TEST.IP",
                             "one_pip_means": "0.0001",
                             "minimum_deal_size": "1",
                             "minimum_stop_distance": "0.0005",
                             "spread": "0.0002",
                             "currency": "USD",
+                            "expiry": "-",
                         },
                         "broker_validation": {
+                            "status": "BROKER_VALIDATED",
+                            "source_fingerprint": "d" * 64,
+                            "observed_spread_rows": 1,
                             "rows": [
                                 {
                                     "timestamp_utc": timestamp.isoformat(),
@@ -111,23 +120,35 @@ def test_dq03_evidence_alignment_and_cost_model_require_matching_fingerprint(tmp
         ),
         encoding="utf-8",
     )
-    (tmp_path / "cost.json").write_text(
+    (tmp_path / "history_validation.json").write_text(
         json.dumps(
             {
-                "instruments": [
+                "samples": [
                     {
                         "symbol": "EURUSD",
-                        "metadata_fingerprint": fingerprint,
-                        "base_spread": "0.0002",
-                        "slippage": "0.0001",
-                        "commission_price_equivalent": "0",
-                        "allowed_utc_hours": list(range(24)),
-                        "evidence_basis": "Reviewed DQ-03 cost evidence.",
+                        "epic": "CS.D.TEST.IP",
+                        "status": "BROKER_VALIDATED",
+                        "source_fingerprint": "d" * 64,
+                        "observed_spread_rows": 1,
+                        "rows": [
+                            {
+                                "timestamp_utc": timestamp.isoformat(),
+                                "close_mid": "1.1000",
+                                "close_spread": "0.0002",
+                            }
+                        ],
                     }
                 ]
             }
         ),
         encoding="utf-8",
+    )
+    preflight = preflight_dq03_evidence(tmp_path, expected_symbols=("EURUSD",))
+    assert preflight.broker_ready
+    generate_research_cost_model(
+        preflight.evidence,
+        expected_symbols=("EURUSD",),
+        output_path=tmp_path / "cost.json",
     )
     evidence = load_dq03_evidence(tmp_path)["EURUSD"]
     matching = _dataset("EURUSD", Timeframe.H1)
@@ -164,26 +185,9 @@ def test_sl02_runner_writes_full_artifact_set_and_blocks_missing_cost_evidence(t
         cost_evidence_path=tmp_path / "cost-missing.json",
         history_source=_FakeHistorySource(),
     )
-    result = runner.run()
-    assert result.combinations_scheduled > 100
-    assert result.combinations_simulated == 0
-    assert {
-        "sl02_dataset_manifest.json",
-        "sl02_results.json",
-        "sl02_leaderboard.json",
-        "sl02_walk_forward.json",
-        "sl02_stress_tests.json",
-        "sl02_portfolio.json",
-        "demo_candidate_registry.json",
-    } == set(result.artifact_paths)
-    results = json.loads((tmp_path / "artifacts" / "sl02_results.json").read_text(encoding="utf-8"))
-    assert results["execution_authority"] == "OFF"
-    assert results["safety"] == {
-        "broker_order_mutation_available": False,
-        "execution_authority": "OFF",
-        "external_history_requests": "GET-only public provider requests; no IG endpoint is constructed.",
-        "ig_close_calls": 0,
-        "ig_create_calls": 0,
-        "live_calls": 0,
-    }
-    assert {item["classification"] for item in results["results"]} == {"LOW_DATA_DEPTH"}
+    with pytest.raises(SL02BrokerEvidenceRequired) as error:
+        runner.run()
+    report = json.loads(error.value.report_path.read_text(encoding="utf-8"))
+    assert report["status"] == "SL02_BROKER_EVIDENCE_REQUIRED"
+    assert report["loaded_verified_count"] == 0
+    assert not (tmp_path / "artifacts" / "sl02_results.json").exists()

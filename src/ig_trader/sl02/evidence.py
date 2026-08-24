@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import Iterable
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
@@ -17,6 +18,52 @@ from src.ig_trader.sl02.contracts import (
     BrokerValidationPoint,
 )
 from src.ig_trader.strategy_lab.data import CanonicalDataset
+
+
+_REQUIRED_DOCUMENTS = ("instrument_registry.json", "history_validation.json")
+
+
+@dataclass(frozen=True)
+class EvidencePreflight:
+    """Validated, sanitized DQ-03 handoff suitable for research only."""
+
+    directory: Path
+    expected_symbols: tuple[str, ...]
+    loaded_documents: tuple[str, ...]
+    verified_count: int
+    broker_validated_count: int
+    fingerprint_mismatches: tuple[str, ...]
+    missing_cost_inputs: dict[str, tuple[str, ...]]
+    errors: tuple[str, ...]
+    evidence: dict[str, BrokerEvidence]
+
+    @property
+    def broker_ready(self) -> bool:
+        return not self.errors and set(self.evidence) == set(self.expected_symbols)
+
+    def document(self) -> dict[str, object]:
+        return {
+            "dq03_directory": str(self.directory),
+            "loaded_documents": list(self.loaded_documents),
+            "required_verified_count": len(self.expected_symbols),
+            "loaded_verified_count": self.verified_count,
+            "broker_validated_count": self.broker_validated_count,
+            "fingerprint_mismatches": list(self.fingerprint_mismatches),
+            "missing_cost_inputs": {
+                symbol: list(reasons) for symbol, reasons in self.missing_cost_inputs.items()
+            },
+            "errors": list(self.errors),
+            "status": "READY_FOR_RESEARCH_COST_MODEL" if self.broker_ready else "SL02_BROKER_EVIDENCE_REQUIRED",
+            "execution_authority": "OFF",
+        }
+
+
+def write_preflight_report(path: Path, report: dict[str, object]) -> Path:
+    """Persist the sanitized preflight report without copying DQ-03 evidence."""
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(report, sort_keys=True, indent=2) + "\n", encoding="utf-8")
+    return path
 
 
 def load_dq03_evidence(directory: Path) -> dict[str, BrokerEvidence]:
@@ -35,24 +82,165 @@ def load_dq03_evidence(directory: Path) -> dict[str, BrokerEvidence]:
         symbol = value.get("canonical_symbol")
         if not isinstance(symbol, str) or not symbol.isupper():
             continue
-        metadata = value.get("metadata") if isinstance(value.get("metadata"), dict) else {}
-        embedded = value.get("broker_validation")
-        rows = _points(embedded.get("rows") if isinstance(embedded, dict) else ())
-        result[symbol] = BrokerEvidence(
-            symbol=symbol,
-            epic=_text(value.get("selected_epic")),
-            metadata_fingerprint=_text(value.get("metadata_fingerprint")),
-            broker_validation_fingerprint=_text(value.get("broker_validation_fingerprint")),
-            data_status=_text(value.get("data_status")),
-            cost_model_status=_text(value.get("cost_model_status")),
-            pip_or_tick_size=_decimal(metadata.get("one_pip_means")),
-            minimum_deal_size=_decimal(metadata.get("minimum_deal_size")),
-            minimum_stop_distance=_decimal(metadata.get("minimum_stop_distance")),
-            observed_spread=_decimal(metadata.get("spread")),
-            currency=_text(metadata.get("currency")),
-            points=rows or history_rows.get(symbol, ()),
-        )
+        result[symbol] = _broker_evidence(value, history_rows)
     return result
+
+
+def preflight_dq03_evidence(directory: Path, *, expected_symbols: Iterable[str]) -> EvidencePreflight:
+    """Fail closed unless the authoritative DQ-03 handoff proves every required fact."""
+
+    expected = tuple(expected_symbols)
+    documents = {name: _read_object(directory / name) for name in _REQUIRED_DOCUMENTS}
+    loaded = tuple(name for name, value in documents.items() if value is not None)
+    errors = [f"DQ03_DOCUMENT_UNREADABLE:{name}" for name, value in documents.items() if value is None]
+    registry = documents.get("instrument_registry.json") or {}
+    history = documents.get("history_validation.json") or {}
+    registry_rows = registry.get("instruments")
+    if not isinstance(registry_rows, list):
+        registry_rows = []
+        errors.append("DQ03_INSTRUMENT_REGISTRY_INVALID")
+    history_rows = _history_rows(history.get("samples"))
+    history_samples = history.get("samples")
+    if not isinstance(history_samples, list):
+        errors.append("DQ03_HISTORY_VALIDATION_INVALID")
+        history_samples = []
+    history_by_symbol = {
+        sample.get("symbol"): sample
+        for sample in history_samples
+        if isinstance(sample, dict) and isinstance(sample.get("symbol"), str)
+    }
+
+    by_symbol: dict[str, dict[str, Any]] = {}
+    for row in registry_rows:
+        if isinstance(row, dict) and isinstance(row.get("canonical_symbol"), str):
+            symbol = row["canonical_symbol"]
+            if symbol in by_symbol:
+                errors.append(f"DQ03_DUPLICATE_INSTRUMENT:{symbol}")
+            by_symbol[symbol] = row
+
+    verified = [row for row in registry_rows if isinstance(row, dict) and row.get("classification") == "VERIFIED"]
+    evidence: dict[str, BrokerEvidence] = {}
+    fingerprints: list[str] = []
+    missing_cost_inputs: dict[str, tuple[str, ...]] = {}
+    validated = 0
+    for symbol in expected:
+        row = by_symbol.get(symbol)
+        if row is None:
+            errors.append(f"DQ03_REQUIRED_INSTRUMENT_MISSING:{symbol}")
+            continue
+        row_errors, row_cost_inputs, row_mismatches = _validate_required_row(
+            symbol, row, history_rows, history_by_symbol.get(symbol)
+        )
+        errors.extend(row_errors)
+        fingerprints.extend(row_mismatches)
+        if row_cost_inputs:
+            missing_cost_inputs[symbol] = tuple(row_cost_inputs)
+        if not row_errors:
+            evidence[symbol] = _broker_evidence(row, history_rows)
+            validated += 1
+    extra_verified = sorted(
+        str(row.get("canonical_symbol"))
+        for row in verified
+        if row.get("canonical_symbol") not in expected
+    )
+    if extra_verified:
+        errors.append(f"DQ03_UNEXPECTED_VERIFIED_INSTRUMENTS:{','.join(extra_verified)}")
+    if len(verified) != len(expected):
+        errors.append(f"DQ03_VERIFIED_COUNT_MISMATCH:{len(verified)}")
+
+    return EvidencePreflight(
+        directory=directory,
+        expected_symbols=expected,
+        loaded_documents=loaded,
+        verified_count=len(verified),
+        broker_validated_count=validated,
+        fingerprint_mismatches=tuple(sorted(fingerprints)),
+        missing_cost_inputs=missing_cost_inputs,
+        errors=tuple(sorted(set(errors))),
+        evidence=evidence,
+    )
+
+
+def _validate_required_row(
+    symbol: str,
+    row: dict[str, Any],
+    history_rows: dict[str, tuple[BrokerValidationPoint, ...]],
+    history_sample: dict[str, Any] | None,
+) -> tuple[list[str], list[str], list[str]]:
+    errors: list[str] = []
+    cost_inputs: list[str] = []
+    mismatches: list[str] = []
+    metadata = row.get("metadata") if isinstance(row.get("metadata"), dict) else {}
+    validation = row.get("broker_validation") if isinstance(row.get("broker_validation"), dict) else {}
+    if row.get("classification") != "VERIFIED":
+        errors.append(f"DQ03_INSTRUMENT_NOT_VERIFIED:{symbol}")
+    if row.get("data_status") != "BROKER_VALIDATED":
+        errors.append(f"DQ03_BROKER_VALIDATION_REQUIRED:{symbol}")
+    if not _valid_fingerprint(row.get("metadata_fingerprint")):
+        errors.append(f"DQ03_METADATA_FINGERPRINT_INVALID:{symbol}")
+    if not _valid_fingerprint(row.get("broker_validation_fingerprint")):
+        errors.append(f"DQ03_BROKER_VALIDATION_FINGERPRINT_INVALID:{symbol}")
+    epic = _text(row.get("selected_epic"))
+    if epic is None or epic != _text(metadata.get("epic")):
+        errors.append(f"DQ03_EPIC_MAPPING_INVALID:{symbol}")
+    if validation.get("status") != "BROKER_VALIDATED":
+        errors.append(f"DQ03_EMBEDDED_BROKER_VALIDATION_INVALID:{symbol}")
+    if history_sample is None or history_sample.get("status") != "BROKER_VALIDATED":
+        errors.append(f"DQ03_HISTORY_BROKER_VALIDATION_REQUIRED:{symbol}")
+    elif epic != _text(history_sample.get("epic")):
+        errors.append(f"DQ03_HISTORY_EPIC_MAPPING_INVALID:{symbol}")
+    elif _text(validation.get("source_fingerprint")) != _text(history_sample.get("source_fingerprint")):
+        mismatch = f"DQ03_BROKER_HISTORY_FINGERPRINT_MISMATCH:{symbol}"
+        errors.append(mismatch)
+        mismatches.append(mismatch)
+
+    pip_or_tick = _decimal(metadata.get("one_pip_means"))
+    minimum_size = _decimal(metadata.get("minimum_deal_size"))
+    minimum_stop = _decimal(metadata.get("minimum_stop_distance"))
+    if pip_or_tick is None or pip_or_tick <= 0:
+        cost_inputs.append("PIP_OR_TICK_SIZE_MISSING")
+    if minimum_size is None or minimum_size <= 0:
+        cost_inputs.append("MINIMUM_DEAL_SIZE_MISSING")
+    if minimum_stop is None or minimum_stop < 0:
+        cost_inputs.append("MINIMUM_STOP_DISTANCE_MISSING")
+    currency = _text(metadata.get("currency"))
+    if currency is None or len(currency) != 3:
+        cost_inputs.append("CURRENCY_MISSING")
+    points = history_rows.get(symbol, ())
+    if not points or not any(point.spread is not None and point.spread > 0 for point in points):
+        cost_inputs.append("OBSERVED_SPREAD_ROWS_MISSING")
+    if _nonnegative_int(validation.get("observed_spread_rows")) <= 0:
+        errors.append(f"DQ03_EMBEDDED_OBSERVED_SPREAD_REQUIRED:{symbol}")
+    if history_sample is not None and _nonnegative_int(history_sample.get("observed_spread_rows")) <= 0:
+        errors.append(f"DQ03_HISTORY_OBSERVED_SPREAD_REQUIRED:{symbol}")
+    return errors, cost_inputs, mismatches
+
+
+def _broker_evidence(
+    value: dict[str, Any], history_rows: dict[str, tuple[BrokerValidationPoint, ...]]
+) -> BrokerEvidence:
+    symbol = str(value["canonical_symbol"])
+    metadata = value.get("metadata") if isinstance(value.get("metadata"), dict) else {}
+    embedded = value.get("broker_validation")
+    rows = _points(embedded.get("rows") if isinstance(embedded, dict) else ())
+    points = rows or history_rows.get(symbol, ())
+    return BrokerEvidence(
+        symbol=symbol,
+        epic=_text(value.get("selected_epic")),
+        metadata_fingerprint=_text(value.get("metadata_fingerprint")),
+        broker_validation_fingerprint=_text(value.get("broker_validation_fingerprint")),
+        data_status=_text(value.get("data_status")),
+        cost_model_status=_text(value.get("cost_model_status")),
+        pip_or_tick_size=_decimal(metadata.get("one_pip_means")),
+        minimum_deal_size=_decimal(metadata.get("minimum_deal_size")),
+        minimum_stop_distance=_decimal(metadata.get("minimum_stop_distance")),
+        observed_spread=_decimal(metadata.get("spread")),
+        currency=_text(metadata.get("currency")),
+        points=points,
+        observed_spreads=tuple(point.spread for point in points if point.spread is not None),
+        asset_class=_text(value.get("asset_class")),
+        expiry=_text(metadata.get("expiry")),
+    )
 
 
 def compare_with_broker_sample(
@@ -169,6 +357,19 @@ def _decimal(value: object) -> Decimal | None:
         return Decimal(str(value))
     except (InvalidOperation, ValueError):
         return None
+
+
+def _valid_fingerprint(value: object) -> bool:
+    return isinstance(value, str) and len(value) == 64 and all(
+        char in "0123456789abcdef" for char in value.lower()
+    )
+
+
+def _nonnegative_int(value: object) -> int:
+    try:
+        return int(value) if value is not None else 0
+    except (TypeError, ValueError):
+        return 0
 
 
 def _text(value: object) -> str | None:

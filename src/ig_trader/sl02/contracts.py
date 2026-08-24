@@ -46,6 +46,9 @@ class BrokerEvidence:
     observed_spread: Decimal | None
     currency: str | None
     points: tuple[BrokerValidationPoint, ...] = ()
+    observed_spreads: tuple[Decimal, ...] = ()
+    asset_class: str | None = None
+    expiry: str | None = None
 
 
 @dataclass(frozen=True)

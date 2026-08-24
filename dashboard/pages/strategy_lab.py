@@ -71,6 +71,16 @@ def render(snapshot: StrategyLabSnapshot) -> None:
                 str(strategy_summary.get("insufficient_data", 0)),
                 "No missing data is invented.",
             ),
+            (
+                "Pre-simulation blockers",
+                str(strategy_summary.get("pre_simulation_blocked", 0)),
+                "Not a negative backtest result.",
+            ),
+            (
+                "Simulated failures",
+                str(strategy_summary.get("simulated_and_failed", 0)),
+                "Backtested but did not qualify.",
+            ),
         )
     )
     filtered = _filters(snapshot.entries)
@@ -93,6 +103,7 @@ def render(snapshot: StrategyLabSnapshot) -> None:
                 "Profit factor": row.get("profit_factor"),
                 "Max drawdown": row.get("max_drawdown"),
                 "OOS expectancy": row.get("oos_expectancy"),
+                "Evaluation state": row.get("evaluation_state"),
                 "Classification": row.get("classification", row["status"]),
                 "Rank": row.get("champion_challenger_rank"),
                 "Why rejected": row.get("why_rejected"),

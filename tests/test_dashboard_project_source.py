@@ -87,7 +87,7 @@ def test_project_gates_keep_reviewed_links_and_current_verification_dates() -> N
         if gate_id != "SL02_BROAD_STRATEGY_QUALIFICATION"
     )
     assert gates["SL02_BROAD_STRATEGY_QUALIFICATION"].last_verified_at.isoformat() == (
-        "2026-08-24T00:00:00+00:00"
+        "2026-08-24T11:51:53+00:00"
     )
 
 

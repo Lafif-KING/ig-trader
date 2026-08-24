@@ -12,8 +12,12 @@ from typing import Any
 
 from src.ig_trader.sl02.artifacts import write_sl02_artifacts
 from src.ig_trader.sl02.contracts import AcquiredDataset, AlignmentResult, BrokerEvidence
-from src.ig_trader.sl02.costs import friction_model, load_cost_evidence
-from src.ig_trader.sl02.evidence import compare_with_broker_sample, load_dq03_evidence
+from src.ig_trader.sl02.costs import cost_evidence_preflight, friction_model, load_cost_evidence
+from src.ig_trader.sl02.evidence import (
+    compare_with_broker_sample,
+    preflight_dq03_evidence,
+    write_preflight_report,
+)
 from src.ig_trader.sl02.history import ExternalHistoryUnavailable, YahooFinanceHistorySource
 from src.ig_trader.strategy_lab.engine import (
     CandleBacktestEngine,
@@ -79,6 +83,7 @@ _RESEARCH_TIMEFRAMES = (Timeframe.H4, Timeframe.H1, Timeframe.M15, Timeframe.M5)
 @dataclass(frozen=True)
 class SL02Run:
     artifact_paths: dict[str, Path]
+    evidence_preflight_path: Path
     combinations_scheduled: int
     combinations_simulated: int
     parameter_sets_evaluated: int
@@ -93,6 +98,14 @@ class _Evaluation:
     stress_test: dict[str, object]
     returns: tuple[Decimal, ...]
     intervals: tuple[tuple[datetime, datetime], ...]
+
+
+class SL02BrokerEvidenceRequired(RuntimeError):
+    """Raised before acquisition when DQ-03 cannot prove the required broker facts."""
+
+    def __init__(self, report_path: Path) -> None:
+        super().__init__("SL02_BROKER_EVIDENCE_REQUIRED")
+        self.report_path = report_path
 
 
 class SL02Runner:
@@ -122,7 +135,24 @@ class SL02Runner:
         """Execute the complete 20-instrument batch; failures stay explicit per dataset."""
 
         started = monotonic()
-        broker_evidence = load_dq03_evidence(self.dq03_directory)
+        preflight = preflight_dq03_evidence(
+            self.dq03_directory, expected_symbols=SL02_VERIFIED_SYMBOLS
+        )
+        cost_preflight = cost_evidence_preflight(
+            self.cost_evidence_path,
+            preflight.evidence,
+            expected_symbols=SL02_VERIFIED_SYMBOLS,
+        )
+        preflight_report = {
+            **preflight.document(),
+            "cost_evidence": cost_preflight,
+        }
+        preflight_path = write_preflight_report(
+            self.artifact_directory / "sl02_evidence_preflight.json", preflight_report
+        )
+        if not preflight.broker_ready:
+            raise SL02BrokerEvidenceRequired(preflight_path)
+        broker_evidence = preflight.evidence
         cost_evidence = load_cost_evidence(self.cost_evidence_path)
         specifications = {symbol: INITIAL_INSTRUMENT_REGISTRY[symbol] for symbol in SL02_VERIFIED_SYMBOLS}
         planned = self._planned_combinations(specifications)
@@ -167,6 +197,7 @@ class SL02Runner:
 
         entries = [evaluation.entry for evaluation in evaluations]
         _rank_candidates(entries)
+        evaluation_summary = _evaluation_summary(entries)
         portfolio = _portfolio_document(evaluations, specifications)
         demo_candidates = [
             entry
@@ -184,6 +215,8 @@ class SL02Runner:
                 "combinations_scheduled": len(planned),
                 "combinations_simulated": simulated,
                 "parameter_sets_evaluated": parameters,
+                "evaluation_summary": evaluation_summary,
+                "evidence_preflight": preflight_report,
                 "results": entries,
                 "safety": _safety_document(),
             },
@@ -201,6 +234,7 @@ class SL02Runner:
         paths = write_sl02_artifacts(self.artifact_directory, documents)
         return SL02Run(
             paths,
+            preflight_path,
             len(planned),
             simulated,
             parameters,
@@ -346,6 +380,7 @@ class SL02Runner:
         if acquired.depth_status.value == "LOW_DATA_DEPTH":
             classification = QualificationStatus.LOW_DATA_DEPTH
         metrics = test_result.metrics
+        evaluation_state = _simulation_state(classification)
         entry = _entry(
             specification,
             selected,
@@ -353,6 +388,7 @@ class SL02Runner:
             acquired,
             broker,
             alignment,
+            evaluation_state,
             classification,
             metrics,
             selected_validation.metrics,
@@ -372,6 +408,8 @@ class SL02Runner:
                 "strategy": selected.definition.strategy_id,
                 "timeframe": timeframe.value,
                 "selected_parameter_fingerprint": selected.definition.configuration_fingerprint,
+                "evaluation_state": evaluation_state,
+                "classification": classification.value,
             }
         )
         stress_document.update(
@@ -380,6 +418,8 @@ class SL02Runner:
                 "strategy": selected.definition.strategy_id,
                 "timeframe": timeframe.value,
                 "parameter_fingerprint": selected.definition.configuration_fingerprint,
+                "evaluation_state": evaluation_state,
+                "classification": classification.value,
             }
         )
         return _Evaluation(
@@ -500,6 +540,7 @@ def _blocked_entry(
         dataset,
         broker,
         alignment,
+        "PRE_SIMULATION_BLOCKED",
         classification,
         None,
         None,
@@ -518,6 +559,7 @@ def _entry(
     acquired: AcquiredDataset | None,
     broker: BrokerEvidence | None,
     alignment: AlignmentResult | None,
+    evaluation_state: str,
     classification: QualificationStatus,
     metrics: PerformanceMetrics | None,
     validation: PerformanceMetrics | None,
@@ -566,6 +608,7 @@ def _entry(
         "validation_expectancy": validation.expectancy if validation else None,
         "oos_expectancy": walk_forward.expectancy if walk_forward else None,
         "stress_test_passed": stress_passed,
+        "evaluation_state": evaluation_state,
         "classification": classification.value,
         "why_rejected": reasons,
         "champion_challenger_rank": None,
@@ -632,6 +675,7 @@ def _blocked_walk_forward(
         "timeframe": timeframe.value,
         "window_count": 0,
         "classification": status.value,
+        "evaluation_state": "PRE_SIMULATION_BLOCKED",
         "reason": reason,
     }
 
@@ -645,6 +689,7 @@ def _blocked_stress_test(
         "timeframe": timeframe.value,
         "passed": False,
         "classification": status.value,
+        "evaluation_state": "PRE_SIMULATION_BLOCKED",
         "reason": reason,
         "scenarios": [],
     }
@@ -694,6 +739,30 @@ def _status_score(value: str) -> int:
         QualificationStatus.CHALLENGER.value: 3,
         QualificationStatus.RESEARCH_WATCH.value: 2,
     }.get(value, 0)
+
+
+def _simulation_state(classification: QualificationStatus) -> str:
+    qualified = {
+        QualificationStatus.RESEARCH_WATCH,
+        QualificationStatus.CHALLENGER,
+        QualificationStatus.CHAMPION_CANDIDATE,
+        QualificationStatus.READY_FOR_DEMO_QUALIFICATION,
+    }
+    return "SIMULATED_AND_QUALIFIED" if classification in qualified else "SIMULATED_AND_FAILED"
+
+
+def _evaluation_summary(entries: list[dict[str, object]]) -> dict[str, int]:
+    return {
+        "pre_simulation_blocked": sum(
+            item.get("evaluation_state") == "PRE_SIMULATION_BLOCKED" for item in entries
+        ),
+        "simulated_and_failed": sum(
+            item.get("evaluation_state") == "SIMULATED_AND_FAILED" for item in entries
+        ),
+        "simulated_and_qualified": sum(
+            item.get("evaluation_state") == "SIMULATED_AND_QUALIFIED" for item in entries
+        ),
+    }
 
 
 def _decimal_or_low(value: object) -> Decimal:

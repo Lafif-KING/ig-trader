@@ -50,6 +50,8 @@ def load_strategy_lab_snapshot(
             "challengers": sum(str(item.get("champion_challenger_rank", "")).startswith("CHALLENGER_") for item in entries),
             "rejected": sum(item.get("classification") in {"RESEARCH_REJECTED", "NEGATIVE_EXPECTANCY", "OVERFIT_RISK", "STRESS_TEST_FAIL", "SOURCE_DIVERGENCE"} for item in entries),
             "insufficient_data": sum(item.get("classification") in {"DATA_NOT_AVAILABLE", "DATA_QUALITY_FAIL", "LOW_DATA_DEPTH", "COST_MODEL_INCOMPLETE", "INSUFFICIENT_TRADES"} for item in entries),
+            "pre_simulation_blocked": sum(item.get("evaluation_state") == "PRE_SIMULATION_BLOCKED" for item in entries),
+            "simulated_and_failed": sum(item.get("evaluation_state") == "SIMULATED_AND_FAILED" for item in entries),
         }
     return StrategyLabSnapshot(
         available=True,
