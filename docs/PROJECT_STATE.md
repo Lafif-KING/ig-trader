@@ -63,6 +63,16 @@ orders, and positions are all 0.
 - Discovery/metadata, bounded history, and streaming smoke are separate,
   resumable phases. Later phases require fresh Phase 1 artifacts for the same
   sanitized Demo account identity and resolver version.
+- History validation preserves normalized, sanitized 20-point broker samples
+  with timestamp parser evidence, bid/ask-or-offer OHLC, spread, row-quality,
+  and fingerprint facts. `snapshotTimeUTC` is preferred; broker-local
+  `snapshotTime` is converted only using the authenticated IG session's
+  declared UTC offset and otherwise fails closed.
+- Later phases augment the Phase 1 registry instead of replacing its resolution
+  provenance. History and streaming evidence are separate ignored artifacts;
+  streaming uses one bounded Lightstreamer session and subscription, explicit
+  broker account identity, system-trust TLS, fresh quote vetoes, and a clean
+  disconnect.
 - The resulting local artifacts are ignored by Git. They record broker facts
   and bounded validation samples only; they never create a Demo execution
   registration or change the disabled Demo/Live authority gates.

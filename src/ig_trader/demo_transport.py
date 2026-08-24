@@ -62,6 +62,7 @@ class IGDemoAccount:
     balance: Decimal | None
     available_funds: Decimal | None
     profit_loss: Decimal | None
+    timezone_offset_hours: int | None = None
 
 
 @dataclass(frozen=True)
@@ -168,10 +169,19 @@ class IGDemoRESTTransport:
         self._session = session
         self.base_url = validate_ig_demo_endpoint(base_url)
         self._error_observer = error_observer
+        self._session_timezone_offset_hours: int | None = None
+
+    @property
+    def session_timezone_offset_hours(self) -> int | None:
+        """The broker-declared local-time offset from the authenticated session."""
+
+        return self._session_timezone_offset_hours
 
     def get_account(self) -> IGDemoAccount:
         document = self._request_json("GET", "/session", version="1")
         account_info = _mapping(document.get("accountInfo"))
+        timezone_offset_hours = _timezone_offset_hours(document.get("timezoneOffset"))
+        self._session_timezone_offset_hours = timezone_offset_hours
         return IGDemoAccount(
             account_id=_text(document.get("accountId"))
             or _text(document.get("currentAccountId"))
@@ -180,6 +190,7 @@ class IGDemoRESTTransport:
             balance=_decimal(account_info.get("balance")),
             available_funds=_decimal(account_info.get("available")),
             profit_loss=_decimal(account_info.get("profitLoss")),
+            timezone_offset_hours=timezone_offset_hours,
         )
 
     def list_positions(self) -> tuple[DemoPosition, ...]:
@@ -446,6 +457,16 @@ def _integer(value: object) -> int | None:
     if isinstance(value, bool) or not isinstance(value, int) or value < 0:
         return None
     return value
+
+
+def _timezone_offset_hours(value: object) -> int | None:
+    """Accept only the documented whole-hour IG session timezone offset."""
+
+    return (
+        value
+        if isinstance(value, int) and not isinstance(value, bool) and -14 <= value <= 14
+        else None
+    )
 
 
 def _leading_decimal(value: object) -> Decimal | None:

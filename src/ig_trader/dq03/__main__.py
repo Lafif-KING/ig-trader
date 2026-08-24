@@ -7,7 +7,7 @@ from __future__ import annotations
 import argparse
 import json
 import time
-from datetime import timedelta
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 from src.ig_trader.config import settings
@@ -20,7 +20,7 @@ from src.ig_trader.demo_transport import (
 )
 from src.ig_trader.dq03.acquisition import DQ03HistoryAcquirer
 from src.ig_trader.dq03.artifacts import write_dq03_artifacts
-from src.ig_trader.dq03.models import DQ03Resolution, RequestCounters
+from src.ig_trader.dq03.models import DataStatus, DQ03Resolution, DQ03Status, RequestCounters
 from src.ig_trader.dq03.phases import load_phase_one_resolutions, phase_context
 from src.ig_trader.dq03.rate_limit import DQ03RateLimiter
 from src.ig_trader.dq03.resolver import DQ03InstrumentResolver
@@ -29,6 +29,7 @@ from src.ig_trader.strategy_lab.models import INITIAL_INSTRUMENTS
 
 ROOT = Path(__file__).resolve().parents[3]
 DEFAULT_ARTIFACT_DIRECTORY = ROOT / "artifacts" / "dq03"
+STREAMING_SMOKE_TIMEOUT_SECONDS = 30
 
 
 def parser() -> argparse.ArgumentParser:
@@ -72,9 +73,11 @@ def main(argv: list[str] | None = None) -> int:
     else:
         results = load_phase_one_resolutions(arguments.output_directory, context)
         if arguments.command == "history":
-            results, samples = DQ03HistoryAcquirer(transport, counters).validate_verified(
-                results, points=arguments.points
-            )
+            results, samples = DQ03HistoryAcquirer(
+                transport,
+                counters,
+                snapshot_time_utc_offset_hours=transport.session_timezone_offset_hours,
+            ).validate_verified(results, points=arguments.points)
             phase = "PHASE_2"
         else:
             streaming = _streaming_smoke(transport, results, counters)
@@ -84,6 +87,7 @@ def main(argv: list[str] | None = None) -> int:
         arguments.output_directory,
         results,
         counters,
+        history_samples=samples,
         streaming_result=streaming,
         phase=phase,
         run_context=context,
@@ -142,59 +146,150 @@ def _streaming_smoke(
     results: tuple[DQ03Resolution, ...],
     counters: RequestCounters,
 ) -> dict[str, object]:
-    """Use one bounded Lightstreamer session for at most three representative contracts."""
+    """Use one bounded Lightstreamer session for the two verified smoke contracts."""
 
     targets = {item.symbol: item for item in results}
-    selected = [targets[name] for name in ("EURUSD", "GER40", "XAUUSD") if name in targets]
+    selected = [
+        targets[name]
+        for name in ("EURUSD", "XAUUSD")
+        if name in targets
+        and targets[name].classification is DQ03Status.VERIFIED
+        and targets[name].data_status is DataStatus.BROKER_VALIDATED
+    ]
+    missing_targets = sorted({"EURUSD", "XAUUSD"} - {item.symbol for item in selected})
+    if missing_targets:
+        return {
+            "status": "NOT_RUN",
+            "reason": "Required broker-validated smoke target is unavailable.",
+            "missing_symbols": missing_targets,
+            "server_endpoint_present": False,
+            "connect_status": "NOT_ATTEMPTED",
+            "subscription_status": "NOT_ATTEMPTED",
+            "fresh_quote_count": 0,
+            "disconnect_status": "NOT_ATTEMPTED",
+        }
     epics = [
         item.selected_epic
         for item in selected
         if item.selected_epic and item.metadata and item.metadata.streaming_prices_available
     ]
-    if not epics:
-        return {"status": "NOT_RUN", "reason": "No representative verified streaming contract."}
+    if len(epics) != 2:
+        return {
+            "status": "NOT_RUN",
+            "reason": "Required target has no proven streaming metadata.",
+            "server_endpoint_present": False,
+            "connect_status": "NOT_ATTEMPTED",
+            "subscription_status": "NOT_ATTEMPTED",
+            "fresh_quote_count": 0,
+            "disconnect_status": "NOT_ATTEMPTED",
+        }
     session = transport._session  # noqa: SLF001 - authenticated transport-owned session.
     endpoint = getattr(session, "lightstreamer_endpoint", None)
+    evidence: dict[str, object] = {
+        "status": "FAIL",
+        "server_endpoint_present": isinstance(endpoint, str) and bool(endpoint),
+        "connect_status": "NOT_ATTEMPTED",
+        "subscription_status": "NOT_ATTEMPTED",
+        "subscribed_epics": epics,
+        "fresh_quote_count": 0,
+        "quotes": [],
+        "timeout_seconds": STREAMING_SMOKE_TIMEOUT_SECONDS,
+        "disconnect_status": "NOT_ATTEMPTED",
+    }
     if not isinstance(endpoint, str) or not endpoint:
-        return {"status": "NOT_RUN", "reason": "IG session did not return a streaming endpoint."}
-    stream = DemoPriceStream(
-        endpoint=endpoint,
-        api_key=settings.ig_api_key,
-        session=session,
-        rest_demo_proven=True,
-    )
+        evidence.update(status="NOT_RUN", reason="IG session did not return a streaming endpoint.")
+        return evidence
+    stream: DemoPriceStream | None = None
     try:
+        stream = DemoPriceStream(
+            endpoint=endpoint,
+            session=session,
+            rest_demo_proven=True,
+        )
         stream.connect()
+        evidence["connect_status"] = "REQUESTED"
         stream.subscribe_prices(epics)
         counters.streaming_subscription_count += 1
-        deadline = time.monotonic() + 10
+        evidence["subscription_status"] = "REQUESTED"
+        deadline = time.monotonic() + STREAMING_SMOKE_TIMEOUT_SECONDS
         while time.monotonic() < deadline:
+            evidence["connect_status"] = stream.connection_status
+            if stream.connection_error is not None:
+                evidence["reason"] = (
+                    f"Lightstreamer server connection failed (code {stream.connection_error})."
+                )
+                break
+            if stream.subscription_error is not None:
+                evidence.update(
+                    subscription_status="SERVER_REJECTED",
+                    reason=f"Lightstreamer rejected the subscription (code {stream.subscription_error}).",
+                )
+                break
             fresh = [stream.quote(epic, maximum_age=timedelta(seconds=5)) for epic in epics]
-            if all(fresh):
-                return {
-                    "status": "PASS",
-                    "epics": epics,
-                    "quotes": [
+            if stream.connection_confirmed and stream.subscription_confirmed and all(fresh):
+                quotes = [quote for quote in fresh if quote is not None]
+                evidence.update(
+                    status="PASS",
+                    subscription_status="CONFIRMED",
+                    fresh_quote_count=len(quotes),
+                    quotes=[
                         {
                             "epic": quote.epic,
                             "bid": str(quote.bid),
                             "offer": str(quote.offer),
-                            "timestamp": quote.observed_at.isoformat(),
+                            "timestamp_utc": _format_utc_timestamp(quote.observed_at),
+                            "age_seconds": round(
+                                max(0.0, (datetime.now(UTC) - quote.observed_at).total_seconds()), 3
+                            ),
                         }
-                        for quote in fresh
-                        if quote is not None
+                        for quote in quotes
                     ],
-                }
+                )
+                break
             time.sleep(0.2)
-        return {
-            "status": "FAIL",
-            "reason": "No fresh BID/OFFER within ten seconds.",
-            "epics": epics,
-        }
+        if evidence["status"] != "PASS":
+            evidence["connect_status"] = stream.connection_status
+            if not stream.connection_confirmed and stream.connection_error is None:
+                evidence["reason"] = (
+                    "Lightstreamer did not confirm a server connection within "
+                    f"{STREAMING_SMOKE_TIMEOUT_SECONDS} seconds."
+                )
+            elif stream.subscription_confirmed:
+                evidence["subscription_status"] = "CONFIRMED"
+                evidence.setdefault(
+                    "reason",
+                    f"No fresh BID/OFFER within {STREAMING_SMOKE_TIMEOUT_SECONDS} seconds.",
+                )
+            elif stream.subscription_error is None:
+                evidence["reason"] = (
+                    "Lightstreamer did not confirm the subscription within "
+                    f"{STREAMING_SMOKE_TIMEOUT_SECONDS} seconds."
+                )
     except Exception as error:  # Read-only smoke evidence must not be hidden.
-        return {"status": "FAIL", "reason": str(error)[:180], "epics": epics}
+        evidence["reason"] = str(error)[:180]
     finally:
-        stream.disconnect()
+        if stream is not None:
+            try:
+                stream.disconnect()
+                evidence["disconnect_status"] = "DISCONNECTED"
+            except Exception as error:  # The smoke result must retain disconnect failure evidence.
+                evidence["disconnect_status"] = "FAIL"
+                evidence.setdefault("reason", str(error)[:180])
+    return evidence
+
+
+def _format_utc_timestamp(value: datetime) -> str:
+    """Render a broker event timestamp as UTC without depending on callback-local tzinfo."""
+
+    seconds = value.timestamp()
+    whole_seconds = int(seconds)
+    microseconds = round((seconds - whole_seconds) * 1_000_000)
+    if microseconds == 1_000_000:
+        whole_seconds += 1
+        microseconds = 0
+    return time.strftime("%Y-%m-%dT%H:%M:%S", time.gmtime(whole_seconds)) + (
+        f".{microseconds:06d}Z"
+    )
 
 
 def _print_summary(results: tuple[DQ03Resolution, ...]) -> None:

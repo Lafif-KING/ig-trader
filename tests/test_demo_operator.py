@@ -254,9 +254,13 @@ def test_one_demo_streaming_session_rejects_stale_data_and_duplicate_subscriptio
             pass
 
     class FakeClient:
-        def __init__(self, _adapter: object, _endpoint: str) -> None:
+        def __init__(self, _server_address: str, _adapter_set: object) -> None:
             self.connectionDetails = FakeConnection()
             self.subscriptions: list[object] = []
+            self.listeners: list[object] = []
+
+        def addListener(self, listener: object) -> None:  # noqa: N802
+            self.listeners.append(listener)
 
         def connect(self) -> None:
             pass
@@ -275,13 +279,13 @@ def test_one_demo_streaming_session_rejects_stale_data_and_duplicate_subscriptio
             self.listener = listener
 
     class Tokens:
+        account_id = "DEMO-TEST"
         cst = "cst"
         x_security_token = "xst"
 
     with pytest.raises(DemoStreamingError):
         DemoPriceStream(
             endpoint="https://demo-stream.example.test",
-            api_key="key",
             session=Tokens(),
             rest_demo_proven=False,
             client_factory=FakeClient,
@@ -289,7 +293,6 @@ def test_one_demo_streaming_session_rejects_stale_data_and_duplicate_subscriptio
         )
     stream = DemoPriceStream(
         endpoint="https://demo-stream.example.test",
-        api_key="key",
         session=Tokens(),
         rest_demo_proven=True,
         client_factory=FakeClient,

@@ -10,6 +10,7 @@ from pathlib import Path
 
 from src.ig_trader.dq03.artifacts import RESOLVER_VERSION, phase_context_matches
 from src.ig_trader.dq03.models import (
+    CandidateEvidence,
     DataStatus,
     DQ03Resolution,
     DQ03Status,
@@ -75,7 +76,7 @@ def _resolution(value: dict[str, object]) -> DQ03Resolution:
         )
         if isinstance(value.get("selection_reasons"), list)
         else (),
-        candidates=(),
+        candidates=_candidates(value.get("candidates")),
         metadata=metadata,
         data_status=data_status,
         observed_at=observed,
@@ -113,6 +114,38 @@ def _metadata(value: dict[str, object]) -> MarketMetadata:
         lot_size=_decimal(value.get("lot_size")),
         scaling_factor=_integer(value.get("scaling_factor")),
     )
+
+
+def _candidates(value: object) -> tuple[CandidateEvidence, ...]:
+    if not isinstance(value, list):
+        return ()
+    candidates: list[CandidateEvidence] = []
+    for item in value:
+        if not isinstance(item, dict):
+            continue
+        metadata_value = item.get("metadata")
+        metadata = _metadata(metadata_value) if isinstance(metadata_value, dict) else None
+        candidates.append(
+            CandidateEvidence(
+                epic=_text(item.get("epic")),
+                display_name=_text(item.get("display_name")),
+                instrument_type=_text(item.get("instrument_type")),
+                expiry=_text(item.get("expiry")),
+                market_status=_text(item.get("market_status")),
+                aliases=tuple(alias for alias in item.get("aliases", []) if isinstance(alias, str))
+                if isinstance(item.get("aliases"), list)
+                else (),
+                score=_integer(item.get("score")),
+                selected=bool(item.get("selected")),
+                reasons=tuple(
+                    reason for reason in item.get("reasons", []) if isinstance(reason, str)
+                )
+                if isinstance(item.get("reasons"), list)
+                else (),
+                metadata=metadata,
+            )
+        )
+    return tuple(candidates)
 
 
 def _decimal(value: object) -> Decimal | None:
