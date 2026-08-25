@@ -83,6 +83,32 @@ def render(snapshot: StrategyLabSnapshot) -> None:
             ),
         )
     )
+    if snapshot.sl04_before_after:
+        st.subheader("Deep-data coverage comparison")
+        before = snapshot.sl04_before_after.get("before", {})
+        after = snapshot.sl04_before_after.get("after", {})
+        st.dataframe(
+            [
+                {
+                    "Evidence": "SL-03 previous data",
+                    "Datasets": before.get("datasets"),
+                    "Scheduled": before.get("scheduled_combinations"),
+                    "Simulated": before.get("simulated_combinations"),
+                    "Simulation coverage %": before.get("simulation_percentage"),
+                    "Block counts": before.get("block_counts"),
+                },
+                {
+                    "Evidence": "SL-04 deep data",
+                    "Datasets": after.get("datasets"),
+                    "Scheduled": after.get("scheduled_combinations"),
+                    "Simulated": after.get("simulated_combinations"),
+                    "Simulation coverage %": after.get("simulation_percentage"),
+                    "Block counts": after.get("block_counts"),
+                },
+            ],
+            hide_index=True,
+            width="stretch",
+        )
     filtered = _filters(snapshot.entries)
     st.subheader("Leaderboard")
     st.dataframe(
@@ -95,8 +121,11 @@ def render(snapshot: StrategyLabSnapshot) -> None:
                 "Version": row["version"],
                 "Timeframe": row["timeframe"],
                 "Data source": row.get("data_source"),
-                "Data duration": row.get("candle_count"),
+                "Data duration seconds": row.get("data_duration_seconds"),
+                "Data rows": row.get("candle_count"),
                 "Data depth": row.get("data_depth"),
+                "Data quality": row.get("data_quality"),
+                "IG alignment": row.get("alignment_status"),
                 "Raw signals": row.get("raw_signals"),
                 "Trades": row["trades"],
                 "OOS trades": row.get("oos_trades"),

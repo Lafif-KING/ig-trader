@@ -46,6 +46,10 @@ from src.ig_trader.strategy_lab.models import (
     is_timeframe_compatible,
     suitable_families,
 )
+from src.ig_trader.strategy_lab.segments import (
+    GapSafeResearchSegmenter,
+    SegmentedDataset,
+)
 from src.ig_trader.strategy_lab.strategies import RuleStrategy
 
 ROOT = Path(__file__).resolve().parents[3]
@@ -85,7 +89,7 @@ class SignalFunnel:
     oos_trades: int
     signals_rejected_by_minimum_stop: int = 0
     signals_rejected_by_cost_or_spread: int = 0
-    minimum_stop_rejection_diagnostics: dict[str, Decimal | int | None] = field(
+    minimum_stop_rejection_diagnostics: dict[str, Decimal | int | str | None] = field(
         default_factory=dict
     )
 
@@ -121,6 +125,7 @@ class SL03Runner:
         yahoo_cache_directory: Path = DEFAULT_YAHOO_CACHE_DIRECTORY,
         dukascopy_cache_directory: Path = DEFAULT_DUKASCOPY_CACHE_DIRECTORY,
         history_source: ResearchHistorySource | None = None,
+        segmenter: GapSafeResearchSegmenter | None = None,
     ) -> None:
         self.artifact_directory = artifact_directory
         self.dq03_directory = dq03_directory
@@ -129,6 +134,7 @@ class SL03Runner:
             yahoo_cache=yahoo_cache_directory,
         )
         self.engine = CandleBacktestEngine()
+        self.segmenter = segmenter
 
     def run(self) -> SL03Run:
         started = monotonic()
@@ -147,12 +153,13 @@ class SL03Runner:
         specifications = {
             symbol: INITIAL_INSTRUMENT_REGISTRY[symbol] for symbol in SL02_VERIFIED_SYMBOLS
         }
-        datasets, acquisition_errors, gap_rows = self._acquire(specifications)
+        datasets, acquisition_errors, gap_rows, segmentations = self._acquire(specifications)
         manifest = self._manifest(
             specifications,
             datasets,
             acquisition_errors,
             preflight.evidence,
+            segmentations,
         )
         planned = self._planned_combinations(specifications)
         entries: list[dict[str, object]] = []
@@ -177,6 +184,7 @@ class SL03Runner:
                 broker,
                 costs.get(symbol),
                 alignment,
+                segmentations.get((symbol, timeframe)),
             )
             if blocked is not None:
                 entry = _blocked_entry(
@@ -196,14 +204,28 @@ class SL03Runner:
                 continue
             assert acquired is not None and broker is not None
             assert costs.get(symbol) is not None
-            evaluation = self._evaluate(
-                specification,
-                strategy_id,
-                timeframe,
-                acquired,
-                broker,
-                costs[symbol],
-                alignment,
+            segmentation = segmentations.get((symbol, timeframe))
+            evaluation = (
+                self._evaluate_segmented(
+                    specification,
+                    strategy_id,
+                    timeframe,
+                    acquired,
+                    broker,
+                    costs[symbol],
+                    alignment,
+                    segmentation,
+                )
+                if segmentation is not None
+                else self._evaluate(
+                    specification,
+                    strategy_id,
+                    timeframe,
+                    acquired,
+                    broker,
+                    costs[symbol],
+                    alignment,
+                )
             )
             entries.append(evaluation.entry)
             funnels.append(evaluation.funnel)
@@ -229,6 +251,17 @@ class SL03Runner:
                 "source_policy": (
                     "External-provider candles are never labelled as IG candles. "
                     "SL-03 uses cache-first source selection and records unavailable deep data."
+                ),
+                "gap_safe_segmentation": (
+                    {
+                        "policy": self.segmenter.policy_document(),
+                        "datasets": [
+                            item.document()
+                            for _, item in sorted(segmentations.items(), key=_dataset_key)
+                        ],
+                    }
+                    if self.segmenter is not None
+                    else None
                 ),
             },
             "sl03_signal_funnel.json": {"evaluations": funnels},
@@ -279,10 +312,12 @@ class SL03Runner:
         dict[tuple[str, Timeframe], ResearchDataset],
         dict[tuple[str, Timeframe], str],
         list[dict[str, object]],
+        dict[tuple[str, Timeframe], SegmentedDataset],
     ]:
         datasets: dict[tuple[str, Timeframe], ResearchDataset] = {}
         errors: dict[tuple[str, Timeframe], str] = {}
         gap_rows: list[dict[str, object]] = []
+        segmentations: dict[tuple[str, Timeframe], SegmentedDataset] = {}
         for symbol, specification in specifications.items():
             for timeframe in (Timeframe.H4, Timeframe.H1, Timeframe.M15, Timeframe.M5):
                 key = (symbol, timeframe)
@@ -301,9 +336,11 @@ class SL03Runner:
                         ),
                     )
                     gap_rows.extend(_gap_rows(symbol, timeframe, audited))
+                    if self.segmenter is not None:
+                        segmentations[key] = self.segmenter.segment(audited.dataset)
                 except (DataContractError, ExternalHistoryUnavailable) as error:
                     errors[key] = str(error)
-        return datasets, errors, gap_rows
+        return datasets, errors, gap_rows, segmentations
 
     def _planned_combinations(
         self, specifications: dict[str, InstrumentSpec]
@@ -334,6 +371,7 @@ class SL03Runner:
         datasets: dict[tuple[str, Timeframe], ResearchDataset],
         errors: dict[tuple[str, Timeframe], str],
         evidence: dict[str, BrokerEvidence],
+        segmentations: dict[tuple[str, Timeframe], SegmentedDataset],
     ) -> list[dict[str, object]]:
         rows: list[dict[str, object]] = []
         for symbol, specification in specifications.items():
@@ -379,6 +417,9 @@ class SL03Runner:
                             for gap in acquired.dataset.gaps
                         ),
                         "depth_status": acquired.depth_status.value,
+                        "gap_safe_segmentation": _segmentation_facts(
+                            segmentations.get((symbol, timeframe))
+                        ),
                         "ig_alignment": asdict(alignment),
                     }
                 )
@@ -525,6 +566,173 @@ class SL03Runner:
             returns=tuple(trade.r_multiple for trade in test.result.trades),
         )
 
+    def _evaluate_segmented(
+        self,
+        specification: InstrumentSpec,
+        strategy_id: str,
+        timeframe: Timeframe,
+        acquired: ResearchDataset,
+        broker: BrokerEvidence,
+        cost: CostEvidence,
+        alignment: AlignmentResult | None,
+        segmentation: SegmentedDataset,
+    ) -> _Evaluation:
+        """Evaluate only independent clean slices in strict chronological order."""
+
+        partitions = segmentation.partitions()
+        if not partitions.ready:
+            raise ValueError(
+                "gap-safe segmentation was evaluated without complete phase partitions"
+            )
+        friction = friction_model(broker, cost, stress_multiplier=Decimal("1"))
+        assert friction is not None
+        variants = sl03_challenger_variants(strategy_id)
+        development = {
+            item.definition.configuration_fingerprint: _simulate_segmented(
+                partitions.development, item, friction, self.engine, phase="development"
+            )
+            for item in variants
+        }
+        validation = {
+            item.definition.configuration_fingerprint: _simulate_segmented(
+                partitions.validation, item, friction, self.engine, phase="validation"
+            )
+            for item in variants
+        }
+        selection = _select(variants, development, validation)
+        selected = selection.strategy
+        test = _simulate_segmented(
+            partitions.untouched_test, selected, friction, self.engine, phase="untouched_test"
+        )
+        walk_document, walk_metrics = _walk_forward_segmented(
+            segmentation,
+            variants,
+            friction,
+            self.engine,
+            run=test.result.metrics.trade_count >= 30,
+        )
+        base_classification = classify_result(
+            test.result,
+            validation=validation[selected.definition.configuration_fingerprint].result.metrics,
+            out_of_sample=walk_metrics,
+            overfit_risk=selection.isolated_peak,
+        )
+        stress_document, stress_passed = _stress_segmented(
+            partitions.untouched_test,
+            selected,
+            broker,
+            cost,
+            self.engine,
+            severe=base_classification
+            in {
+                QualificationStatus.CHAMPION_CANDIDATE,
+                QualificationStatus.LOW_SAMPLE_CONFIDENCE,
+            },
+        )
+        classification = _final_classification(
+            base_classification,
+            test.result.metrics,
+            walk_metrics,
+            stress_passed,
+        )
+        bootstrap = _bootstrap(test.result, test.result.dataset_fingerprint)
+        entry = _entry(
+            specification,
+            selected,
+            timeframe,
+            acquired,
+            broker,
+            alignment,
+            test.result.metrics,
+            development[selected.definition.configuration_fingerprint].result.metrics,
+            validation[selected.definition.configuration_fingerprint].result.metrics,
+            walk_metrics,
+            classification,
+            len(variants),
+            selection,
+            stress_document,
+            bootstrap,
+        )
+        segment_facts = _segmentation_facts(segmentation)
+        ended = sum(trade.exit_reason == "END_OF_DATA" for trade in test.result.trades)
+        entry.update(
+            {
+                "data_depth": (
+                    "SUFFICIENT_CLEAN_SEGMENT_COVERAGE"
+                    if segmentation.usable_depth_sufficient
+                    else "LOW_DATA_DEPTH"
+                ),
+                "segmentation": segment_facts,
+                "raw_strategy_signals": test.funnel.raw_strategy_signals,
+                "signals_rejected_by_session_filter": (
+                    test.funnel.signals_rejected_by_session_filter
+                ),
+                "signals_rejected_by_cost_or_minimum_stop": (
+                    test.funnel.signals_rejected_by_cost_or_minimum_stop
+                ),
+                "signals_rejected_by_minimum_stop": test.funnel.signals_rejected_by_minimum_stop,
+                "signals_rejected_by_cost_or_spread": (
+                    test.funnel.signals_rejected_by_cost_or_spread
+                ),
+                "minimum_stop_rejection_diagnostics": (
+                    test.funnel.minimum_stop_rejection_diagnostics
+                ),
+                "signals_while_trade_open": test.funnel.signals_while_trade_open,
+                "entries_taken": test.funnel.entries_taken,
+                "trades_terminated_at_segment_end": ended,
+            }
+        )
+        return _Evaluation(
+            entry=entry,
+            funnel={
+                "instrument": specification.symbol,
+                "strategy": selected.definition.strategy_id,
+                "strategy_version": selected.definition.version,
+                "timeframe": timeframe.value,
+                **asdict(test.funnel),
+                "trades_terminated_at_segment_end": ended,
+                "segments_used": {
+                    "development": len(partitions.development),
+                    "validation": len(partitions.validation),
+                    "untouched_test": len(partitions.untouched_test),
+                },
+                "short_phase_slices_excluded": partitions.skipped_short_phase_slices,
+                "regime_filter_note": (
+                    "0: current deterministic rules embed regime logic; no extra filter was added."
+                ),
+                "cost_rule_note": (
+                    "Signals below the normalized DQ-03 minimum stop price distance are "
+                    "rejected, not resized. No separate spread/cost eligibility rule exists."
+                ),
+            },
+            walk_forward={
+                "instrument": specification.symbol,
+                "strategy": selected.definition.strategy_id,
+                "strategy_version": selected.definition.version,
+                "timeframe": timeframe.value,
+                "classification": classification.value,
+                **walk_document,
+            },
+            stress={
+                "instrument": specification.symbol,
+                "strategy": selected.definition.strategy_id,
+                "strategy_version": selected.definition.version,
+                "timeframe": timeframe.value,
+                "classification": classification.value,
+                **stress_document,
+            },
+            robustness={
+                "instrument": specification.symbol,
+                "strategy": selected.definition.strategy_id,
+                "strategy_version": selected.definition.version,
+                "timeframe": timeframe.value,
+                "selection": asdict(selection),
+                "bootstrap": bootstrap,
+                "segmentation": segment_facts,
+            },
+            returns=tuple(trade.r_multiple for trade in test.result.trades),
+        )
+
 
 @dataclass(frozen=True)
 class _Selection:
@@ -614,6 +822,106 @@ def _simulate(
                 rejected_stop_distances, friction.minimum_stop_distance
             ),
         ),
+    )
+
+
+def _simulate_segmented(
+    datasets: tuple[CanonicalDataset, ...],
+    strategy: RuleStrategy,
+    friction: FrictionModel,
+    engine: CandleBacktestEngine,
+    *,
+    phase: str,
+) -> Simulation:
+    """Run every slice independently, then aggregate only its completed evidence."""
+
+    simulations = tuple(_simulate(dataset, strategy, friction, engine) for dataset in datasets)
+    trades = tuple(trade for simulation in simulations for trade in simulation.result.trades)
+    metrics = calculate_metrics(trades, friction.tick_size or Decimal("1"))
+    fingerprint = hashlib.sha256(
+        ":".join(
+            (phase, strategy.definition.configuration_fingerprint)
+            + tuple(dataset.dataset_fingerprint for dataset in datasets)
+        ).encode("utf-8")
+    ).hexdigest()
+    return Simulation(
+        BacktestResult(
+            strategy=strategy.definition,
+            dataset_fingerprint=fingerprint,
+            configuration_fingerprint=DEFAULT_BACKTEST_CONFIG.fingerprint,
+            trades=trades,
+            metrics=metrics,
+            status=QualificationStatus.RESEARCH_WATCH,
+            status_reasons=(),
+        ),
+        _aggregate_funnels(tuple(item.funnel for item in simulations)),
+    )
+
+
+def _aggregate_funnels(funnels: tuple[SignalFunnel, ...]) -> SignalFunnel:
+    """Aggregate counts without claiming a false combined stop-distance median."""
+
+    diagnostics = [item.minimum_stop_rejection_diagnostics for item in funnels]
+    values = [
+        item.get("strategy_stop_distance_price_min")
+        for item in diagnostics
+        if item.get("strategy_stop_distance_price_min") is not None
+    ]
+    maximums = [
+        item.get("strategy_stop_distance_price_max")
+        for item in diagnostics
+        if item.get("strategy_stop_distance_price_max") is not None
+    ]
+    ratio_mins = [
+        item.get("ratio_strategy_stop_to_minimum_min")
+        for item in diagnostics
+        if item.get("ratio_strategy_stop_to_minimum_min") is not None
+    ]
+    ratio_maximums = [
+        item.get("ratio_strategy_stop_to_minimum_max")
+        for item in diagnostics
+        if item.get("ratio_strategy_stop_to_minimum_max") is not None
+    ]
+    minimum_stop = next(
+        (
+            item.get("broker_minimum_stop_price")
+            for item in diagnostics
+            if item.get("broker_minimum_stop_price") is not None
+        ),
+        None,
+    )
+    return SignalFunnel(
+        candles_evaluated=sum(item.candles_evaluated for item in funnels),
+        raw_strategy_signals=sum(item.raw_strategy_signals for item in funnels),
+        signals_rejected_by_regime_filter=sum(
+            item.signals_rejected_by_regime_filter for item in funnels
+        ),
+        signals_rejected_by_session_filter=sum(
+            item.signals_rejected_by_session_filter for item in funnels
+        ),
+        signals_rejected_by_cost_or_minimum_stop=sum(
+            item.signals_rejected_by_cost_or_minimum_stop for item in funnels
+        ),
+        signals_while_trade_open=sum(item.signals_while_trade_open for item in funnels),
+        entries_taken=sum(item.entries_taken for item in funnels),
+        completed_trades=sum(item.completed_trades for item in funnels),
+        oos_trades=sum(item.oos_trades for item in funnels),
+        signals_rejected_by_minimum_stop=sum(
+            item.signals_rejected_by_minimum_stop for item in funnels
+        ),
+        signals_rejected_by_cost_or_spread=sum(
+            item.signals_rejected_by_cost_or_spread for item in funnels
+        ),
+        minimum_stop_rejection_diagnostics={
+            "rejection_count": sum(int(item.get("rejection_count", 0)) for item in diagnostics),
+            "broker_minimum_stop_price": minimum_stop,
+            "strategy_stop_distance_price_min": min(values) if values else None,
+            "strategy_stop_distance_price_max": max(maximums) if maximums else None,
+            "ratio_strategy_stop_to_minimum_min": min(ratio_mins) if ratio_mins else None,
+            "ratio_strategy_stop_to_minimum_max": max(ratio_maximums) if ratio_maximums else None,
+            "ratio_strategy_stop_to_minimum_median": None,
+            "aggregation_note": "Segment medians are intentionally not re-aggregated.",
+        },
     )
 
 
@@ -746,6 +1054,83 @@ def _walk_forward(
     return {"window_count": len(rows), "windows": rows, "aggregate_oos": _metrics(metrics)}, metrics
 
 
+def _walk_forward_segmented(
+    segmentation: SegmentedDataset,
+    variants: tuple[RuleStrategy, ...],
+    friction: FrictionModel,
+    engine: CandleBacktestEngine,
+    *,
+    run: bool,
+) -> tuple[dict[str, object], PerformanceMetrics | None]:
+    """Run walk-forward windows inside individual clean segments only."""
+
+    skipped_due_gap = len(segmentation.hard_boundaries)
+    skipped_due_short = len(segmentation.short_segments)
+    if not run:
+        return {
+            "window_count": 0,
+            "windows_planned": 0,
+            "windows_accepted": 0,
+            "windows_skipped_due_gap": skipped_due_gap,
+            "windows_skipped_due_short_segment": skipped_due_short,
+            "reason": "NOT_RUN_BELOW_30_UNTOUCHED_TEST_TRADES",
+            "windows": [],
+        }, None
+    rows: list[dict[str, object]] = []
+    trades = []
+    planned = 0
+    for segment in segmentation.eligible_segments:
+        dataset = segment.dataset
+        total = len(dataset.candles)
+        windows = walk_forward_windows(
+            dataset,
+            development_size=max(60, int(total * 0.40)),
+            validation_size=max(30, int(total * 0.20)),
+            step=max(30, int(total * 0.20)),
+        )[:3]
+        planned += len(windows)
+        for number, window in enumerate(windows, start=1):
+            development = {
+                item.definition.configuration_fingerprint: _simulate(
+                    window.development, item, friction, engine
+                )
+                for item in variants
+            }
+            selected = max(
+                variants,
+                key=lambda item: _expectancy(
+                    development[item.definition.configuration_fingerprint].result.metrics
+                ),
+            )
+            validation = _simulate(window.validation, selected, friction, engine)
+            trades.extend(validation.result.trades)
+            rows.append(
+                {
+                    "segment_number": segment.number,
+                    "segment_fingerprint": dataset.dataset_fingerprint,
+                    "window": number,
+                    "development_trade_count": development[
+                        selected.definition.configuration_fingerprint
+                    ].result.metrics.trade_count,
+                    "validation_trade_count": validation.result.metrics.trade_count,
+                    "parameter_fingerprint": selected.definition.configuration_fingerprint,
+                    "expectancy": validation.result.metrics.expectancy,
+                    "development_first_utc": window.development.candles[0].timestamp_utc,
+                    "validation_last_utc": window.validation.candles[-1].timestamp_utc,
+                }
+            )
+    metrics = calculate_metrics(trades, friction.tick_size or Decimal("1")) if trades else None
+    return {
+        "window_count": len(rows),
+        "windows_planned": planned,
+        "windows_accepted": len(rows),
+        "windows_skipped_due_gap": skipped_due_gap,
+        "windows_skipped_due_short_segment": skipped_due_short,
+        "windows": rows,
+        "aggregate_oos": _metrics(metrics),
+    }, metrics
+
+
 def _stress(
     dataset: CanonicalDataset,
     strategy: RuleStrategy,
@@ -776,6 +1161,46 @@ def _stress(
                 "profit_factor": metric.profit_factor,
                 "max_drawdown_r": metric.maximum_drawdown_r,
                 "passed": passed,
+            }
+        )
+    return {"passed_base_25_50": passes, "scenarios": rows}, passes
+
+
+def _stress_segmented(
+    datasets: tuple[CanonicalDataset, ...],
+    strategy: RuleStrategy,
+    broker: BrokerEvidence,
+    cost: CostEvidence,
+    engine: CandleBacktestEngine,
+    *,
+    severe: bool,
+) -> tuple[dict[str, object], bool]:
+    """Apply the frozen stress multipliers independently to clean test slices."""
+
+    multipliers = [Decimal("1"), Decimal("1.25"), Decimal("1.50")]
+    if severe:
+        multipliers.append(Decimal("2"))
+    rows: list[dict[str, object]] = []
+    passes = True
+    for multiplier in multipliers:
+        friction = friction_model(broker, cost, stress_multiplier=multiplier)
+        assert friction is not None
+        simulation = _simulate_segmented(
+            datasets, strategy, friction, engine, phase=f"stress-{multiplier}"
+        )
+        metric = simulation.result.metrics
+        passed = metric.expectancy is not None and metric.expectancy > 0
+        if multiplier <= Decimal("1.50"):
+            passes = passes and passed
+        rows.append(
+            {
+                "cost_multiplier": multiplier,
+                "trade_count": metric.trade_count,
+                "expectancy": metric.expectancy,
+                "profit_factor": metric.profit_factor,
+                "max_drawdown_r": metric.maximum_drawdown_r,
+                "passed": passed,
+                "segment_slice_count": len(datasets),
             }
         )
     return {"passed_base_25_50": passes, "scenarios": rows}, passes
@@ -842,17 +1267,30 @@ def _blocked_reason(
     broker: BrokerEvidence | None,
     cost: CostEvidence | None,
     alignment: AlignmentResult | None,
+    segmentation: SegmentedDataset | None = None,
 ) -> tuple[QualificationStatus, str] | None:
     if acquired is None:
         return QualificationStatus.DATA_NOT_AVAILABLE, error or "Dataset unavailable."
     if alignment is not None and alignment.status.value == "MATERIAL_SOURCE_DIVERGENCE":
         return QualificationStatus.SOURCE_DIVERGENCE, alignment.reason
-    if acquired.dataset.has_quality_failure:
+    if segmentation is not None:
+        partitions = segmentation.partitions()
+        if not partitions.ready:
+            return (
+                QualificationStatus.DATA_QUALITY_FAIL,
+                "No clean chronological development/validation/test segment partitions remain.",
+            )
+        if not segmentation.usable_depth_sufficient:
+            return (
+                QualificationStatus.LOW_DATA_DEPTH,
+                "Usable clean segment coverage does not meet the reviewed timeframe depth target.",
+            )
+    elif acquired.dataset.has_quality_failure:
         return (
             QualificationStatus.DATA_QUALITY_FAIL,
             "Unexplained external-data gap remains fail-closed.",
         )
-    if acquired.depth_status.value == "LOW_DATA_DEPTH":
+    if segmentation is None and acquired.depth_status.value == "LOW_DATA_DEPTH":
         return (
             QualificationStatus.LOW_DATA_DEPTH,
             "Dataset does not meet the reviewed timeframe depth target.",
@@ -989,6 +1427,39 @@ def _gap_rows(
     symbol: str, timeframe: Timeframe, audited: AuditedDataset
 ) -> list[dict[str, object]]:
     return [{"instrument": symbol, "timeframe": timeframe.value, **item} for item in audited.gaps]
+
+
+def _dataset_key(item: tuple[tuple[str, Timeframe], SegmentedDataset]) -> tuple[str, str]:
+    return item[0][0], item[0][1].value
+
+
+def _segmentation_facts(segmentation: SegmentedDataset | None) -> dict[str, object] | None:
+    if segmentation is None:
+        return None
+    document = segmentation.document()
+    return {
+        key: document[key]
+        for key in (
+            "minimum_segment_candles",
+            "minimum_phase_candles",
+            "total_raw_duration_seconds",
+            "total_clean_duration_seconds",
+            "usable_clean_duration_seconds",
+            "clean_coverage_ratio",
+            "usable_clean_coverage_ratio",
+            "segment_count",
+            "eligible_segment_count",
+            "short_segment_count",
+            "largest_segment_duration_seconds",
+            "median_segment_duration_seconds",
+            "usable_depth_sufficient",
+            "unexplained_gap_count",
+            "missing_intervals",
+            "single_interval_gap_count",
+            "multi_interval_gap_count",
+            "maximum_gap_length_intervals",
+        )
+    }
 
 
 def _quality_document(rows: list[dict[str, object]]) -> dict[str, object]:

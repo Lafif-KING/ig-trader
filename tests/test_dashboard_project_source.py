@@ -84,7 +84,12 @@ def test_project_gates_keep_reviewed_links_and_current_verification_dates() -> N
     assert all(
         gate.last_verified_at.isoformat() == REVIEWED_AT
         for gate_id, gate in gates.items()
-        if gate_id not in {"SL02_BROAD_STRATEGY_QUALIFICATION", "SL03_DEEP_DATA_SIGNAL_DENSITY"}
+        if gate_id
+        not in {
+            "SL02_BROAD_STRATEGY_QUALIFICATION",
+            "SL03_DEEP_DATA_SIGNAL_DENSITY",
+            "SL04_DEEP_STRUCTURED_HISTORY",
+        }
     )
     assert gates["SL02_BROAD_STRATEGY_QUALIFICATION"].last_verified_at.isoformat() == (
         "2026-08-24T11:51:53+00:00"
@@ -92,6 +97,12 @@ def test_project_gates_keep_reviewed_links_and_current_verification_dates() -> N
     assert gates["SL03_DEEP_DATA_SIGNAL_DENSITY"].governance_status == "IN_PROGRESS"
     assert gates["SL03_DEEP_DATA_SIGNAL_DENSITY"].technical_status == "IN_PROGRESS"
     assert gates["SL03_DEEP_DATA_SIGNAL_DENSITY"].weight == 0
+    sl04 = gates["SL04_DEEP_STRUCTURED_HISTORY"]
+    assert sl04.group == "RESEARCH"
+    assert sl04.governance_status == "IN_PROGRESS"
+    assert sl04.technical_status == "ENGINEERING_CLOSED"
+    assert sl04.weight == 0
+    assert sl04.last_verified_at.isoformat() == "2026-08-25T06:44:35+00:00"
 
 
 def test_project_status_rejects_missing_summary_required_field(tmp_path: Path) -> None:

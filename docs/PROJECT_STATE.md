@@ -1,6 +1,6 @@
 # IG Trader project state
 
-Updated: 2026-08-17
+Updated: 2026-08-25
 Authoritative branch: `origin/main`
 Last verified source baseline: `95fbc14f5c99a2715ceb6085af29c99e62c9793f`
 Current source SHA: verify with `git rev-parse origin/main`.
@@ -98,6 +98,43 @@ orders, and positions are all 0.
   test data is not used for selection. Funnel, walk-forward, friction-stress,
   bootstrap, portfolio, watchlist, and candidate-registry artifacts remain
   ignored local evidence with `execution_authority: OFF`.
+
+## SL-04 Deep Structured History
+
+- SL-04 is an offline-local replay. It consumes supplied `dukascopy-go 0.2.0`
+  (`jetta`) public-feed CSV evidence and does not instantiate a provider HTTP
+  client, require `DUKASCOPY_API_KEY`, or perform network acquisition.
+- Every supplied M1/H1 CSV must have the exact documented schema, UTC `Z`
+  timestamps, strict ordering, no duplicates, valid mid/bid/ask OHLC geometry,
+  non-negative spread/volume, and a deterministic bid/ask midpoint check.
+  Raw paths, sizes, SHA-256 fingerprints, row counts, ranges, and provenance
+  are written only to ignored local research artifacts.
+- Source priority is deterministic: local Dukascopy public-feed CSV, reviewed
+  local structured Dukascopy export, cached Yahoo research history, then
+  `DATA_NOT_AVAILABLE`. There is no provider merge and no outbound download.
+- M1 supplies complete-bucket 5M/15M derivations for the eight available FX
+  pairs; local H1 supplies all sixteen FX pairs directly and complete-bucket
+  H4 derivations. Incomplete buckets are omitted and audited, never invented.
+  Each `DERIVED_BUCKET_OMITTED` records its `SOURCE_GAP` lineage so a derived
+  omission is not misreported as an additional provider failure.
+- Provider bid/ask/spread is data-quality and liquidity evidence only. The
+  DQ-03 fingerprint-bound IG-linked friction model remains the sole backtest
+  execution-cost model, so provider spread is never double charged.
+- SL-04 invokes the existing SL-03 conductor with an opt-in gap-safe research
+  segmentation layer. Every unexplained gap remains a hard boundary: no
+  candle, indicator state, or trade crosses it. The fixed 300-candle segment
+  minimum preserves usable clean coverage without weakening strategy, grid,
+  threshold, friction, walk-forward, bootstrap, or stress rules. Its ignored
+  source, segment, and before/after reports remain research-only with
+  `execution_authority: OFF`.
+- The completed gap-safe local replay accepted 24 files and 926,228 rows,
+  scheduled 300 combinations, and simulated 178 (59.33%). It created 3,279
+  clean segments, of which 210 met the fixed 300-candle minimum; 3,069 were
+  honestly excluded as `SEGMENT_TOO_SHORT`. It produced no Demo-ready row.
+  The local raw-data audit preserved 3,199 unexplained boundaries, 4,165 root
+  source gaps, and 105,292 lineage-linked derived omitted buckets; no gap was
+  filled or reclassified merely to increase simulation coverage. Network
+  acquisition, IG create/close, Live, and Azure calls were all 0.
 
 ## DQ-03 Instrument Resolution and Data
 
