@@ -1,71 +1,76 @@
-"""Local-only operator page; existing Control Center pages remain read-only."""
-
-# ruff: noqa: E501
+"""Local-only Demo Operator control boundary."""
 
 from __future__ import annotations
 
 import streamlit as st
 
+from dashboard.models import ControlCenterState
 from dashboard.operator_control import controls_enabled, invoke_local_controller
-from dashboard.sources.demo_operator import (
-    DemoOperatorSnapshot,
-    research_instrument_rows,
-    resolution_detail,
-    strategy_catalog,
-)
+from dashboard.sources.demo_operator import DemoOperatorSnapshot
 
 
-def render(snapshot: DemoOperatorSnapshot) -> None:
+def render(snapshot: DemoOperatorSnapshot, state: ControlCenterState) -> None:
     st.header("Demo Operator")
     st.caption(
-        "Local IG Demo qualification console. Live execution has no control on this page and remains "
-        "impossible. Broker facts are supplied only by the separate local worker."
+        "Local IG Demo control boundary. This page never creates a broker client or calls an IG "
+        "order "
+        "endpoint; requests go only to the separately guarded DQ-02 controller."
     )
-    _status_strip(snapshot)
-    enabled = controls_enabled()
-    if not enabled:
+    _status_strip(state)
+    if state.simulated:
+        st.warning("SIMULATED UI DATA — Demo controls are unavailable in mock/replay mode.")
+        return
+    if not controls_enabled():
         st.warning(
             "READ ONLY: controls require DEMO_OPERATOR_LOCAL=true on a local, non-hosted dashboard."
         )
     else:
-        _controls()
+        _controls(state)
     _alerts(snapshot)
-    _positions(snapshot)
-    _instrument_table_and_detail()
 
 
-def _status_strip(snapshot: DemoOperatorSnapshot) -> None:
-    fields = snapshot.fields
+def _status_strip(state: ControlCenterState) -> None:
     with st.container(horizontal=True):
-        st.metric("Environment", str(fields.get("environment", "IG_DEMO")), border=True)
-        st.metric("REST", str(fields.get("rest_status", "DISCONNECTED")), border=True)
-        st.metric("Streaming", str(fields.get("streaming_status", "DISCONNECTED")), border=True)
-        st.metric("Robot", str(fields.get("robot_state", "STOPPED")), border=True)
-        st.metric("Account", str(fields.get("account", "Not verified")), border=True)
-        st.metric("Kill switch", str(fields.get("kill_switch_state", "BLOCKING")), border=True)
+        st.metric("Environment", state.robot.environment, border=True)
+        st.metric("REST", state.broker.rest_status, border=True)
+        st.metric("Streaming", state.broker.streaming_status, border=True)
+        st.metric("Robot", state.robot.state, border=True)
+        st.metric("Account", state.broker.account_status, border=True)
+        st.metric("Kill switch", state.robot.kill_switch, border=True)
     with st.container(horizontal=True):
-        st.metric("Balance", str(fields.get("balance", "Unavailable")), border=True)
-        st.metric("Available funds", str(fields.get("available_funds", "Unavailable")), border=True)
-        st.metric("Open positions", str(fields.get("total_open_positions", 0)), border=True)
-        st.metric("Open P&L", str(fields.get("total_open_pnl", "Unavailable")), border=True)
-        st.metric(
-            "Today's Demo P&L", str(fields.get("today_realized_pnl", "Unavailable")), border=True
-        )
-    st.caption(
-        f"Last successful IG synchronization: {fields.get('last_successful_sync', 'Not yet synchronized')}"
-    )
+        st.metric("Approved EPICs", str(state.health.approved_epic_count), border=True)
+        st.metric("Approved strategies", str(state.health.approved_strategy_count), border=True)
+        st.metric("Execution authority", state.robot.execution_authority, border=True)
+        st.metric("Reconciliation", state.risk.reconciliation_status, border=True)
+    st.caption(f"Last successful IG synchronization: {state.broker.last_successful_read}")
 
 
-def _controls() -> None:
+def _controls(state: ControlCenterState) -> None:
     st.subheader("Local Demo controls")
     st.info(
-        "Start launches one local worker. It must prove the Demo endpoint and expected account, reconcile "
-        "broker positions, and pass its durable lock checks before it can run."
+        "Start is enabled only after every authority gate passes. "
+        "Pause keeps reconciliation active; "
+        "Stop safely ends the worker; Emergency Kill independently blocks execution."
     )
-    start, stop, kill = st.columns(3)
-    if start.button("START DEMO ROBOT", type="primary", key="dq02_start"):
+    if not state.start_gate.enabled:
+        st.error("START DEMO ROBOT DISABLED")
+        for blocker in state.start_gate.blockers:
+            st.write(f"- {blocker}")
+    start, pause, resume, stop, kill = st.columns(5)
+    if start.button(
+        "START DEMO ROBOT",
+        type="primary",
+        disabled=not state.start_gate.enabled,
+        key="dq02_start",
+    ):
         st.info(invoke_local_controller("start"))
-    if stop.button("STOP ROBOT", key="dq02_stop"):
+    if pause.button("PAUSE NEW ENTRIES", disabled=state.robot.state != "RUNNING", key="dq02_pause"):
+        st.info(invoke_local_controller("pause"))
+    if resume.button("RESUME", disabled=state.robot.state != "PAUSED", key="dq02_resume"):
+        st.info(invoke_local_controller("resume"))
+    if stop.button(
+        "STOP", disabled=state.robot.state not in {"RUNNING", "PAUSED"}, key="dq02_stop"
+    ):
         st.info(invoke_local_controller("stop"))
     if kill.button("EMERGENCY KILL", type="primary", key="dq02_kill"):
         st.warning(invoke_local_controller("kill"))
@@ -74,11 +79,12 @@ def _controls() -> None:
         "I understand this will close every locally owned, reconciled IG Demo position.",
         key="dq02_flatten_confirm",
     )
-    if st.button("CLOSE ALL DEMO POSITIONS", disabled=not confirmed, key="dq02_flatten"):
+    if st.button("FLATTEN ROBOT POSITIONS", disabled=not confirmed, key="dq02_flatten"):
         st.warning(invoke_local_controller("flatten"))
     st.caption(
-        "Flattening is separate from Emergency Kill. It first reads broker positions, refuses unknown "
-        "ownership, then closes each exact reconciled deal through the DQ-01 confirmation path."
+        "Flatten is a separate, explicitly confirmed action. "
+        "Emergency Kill never flattens positions; "
+        "Resume never releases an Emergency Kill."
     )
 
 
@@ -93,83 +99,3 @@ def _alerts(snapshot: DemoOperatorSnapshot) -> None:
         for item in alerts:
             if isinstance(item, str):
                 st.warning(item)
-
-
-def _positions(snapshot: DemoOperatorSnapshot) -> None:
-    st.subheader("Open IG Demo positions")
-    positions = snapshot.fields.get("positions")
-    if not isinstance(positions, list) or not positions:
-        st.info("No synchronized IG Demo positions are available.")
-        return
-    st.dataframe(positions, hide_index=True, width="stretch")
-    st.caption(
-        "The broker position snapshot is authoritative. P&L must use the validated contract metadata, "
-        "BUY bid or SELL offer mark, and stays native-currency when conversion cannot be proven."
-    )
-
-
-def _instrument_table_and_detail() -> None:
-    rows = research_instrument_rows()
-    st.subheader("Research and Demo registry")
-    asset_classes = ("All",) + tuple(sorted({str(row["Asset class"]) for row in rows}))
-    strategies = ("All",) + tuple(sorted({str(row["Assigned strategy"]) for row in rows}))
-    qualifications = ("All",) + tuple(sorted({str(row["Qualification"]) for row in rows}))
-    symbols = ("All",) + tuple(str(row["Instrument"]) for row in rows)
-    position_statuses = ("All",) + tuple(sorted({str(row["Position"]) for row in rows}))
-    first, second, third, fourth, fifth = st.columns(5)
-    asset_filter = first.selectbox("Asset class", asset_classes, key="dq02_asset_filter")
-    instrument_filter = second.selectbox("Instrument", symbols, key="dq02_instrument_filter")
-    strategy_filter = third.selectbox("Strategy", strategies, key="dq02_strategy_filter")
-    qualification_filter = fourth.selectbox(
-        "Qualification", qualifications, key="dq02_qualification_filter"
-    )
-    position_filter = fifth.selectbox(
-        "Position status", position_statuses, key="dq02_position_filter"
-    )
-    filtered = [
-        row
-        for row in rows
-        if (asset_filter == "All" or row["Asset class"] == asset_filter)
-        and (instrument_filter == "All" or row["Instrument"] == instrument_filter)
-        and (strategy_filter == "All" or row["Assigned strategy"] == strategy_filter)
-        and (qualification_filter == "All" or row["Qualification"] == qualification_filter)
-        and (position_filter == "All" or row["Position"] == position_filter)
-    ]
-    st.dataframe(filtered, hide_index=True, width="stretch")
-    selected_symbol = st.selectbox(
-        "Instrument detail",
-        [str(row["Instrument"]) for row in filtered] or ["No result"],
-        key="dq02_detail",
-    )
-    selected = next((row for row in rows if row["Instrument"] == selected_symbol), None)
-    if selected is None:
-        return
-    strategy_id = str(selected["Assigned strategy"])
-    strategy = strategy_catalog()[strategy_id]
-    st.subheader(f"{selected_symbol} strategy and qualification detail")
-    st.write(f"**{strategy['name']} {strategy['version']}** — {strategy['description']}")
-    st.write(f"**Why assigned:** {selected['Why assigned']}")
-    st.write(f"**Family:** {strategy['family']}")
-    st.write(f"**Market hypothesis:** {strategy['market_hypothesis']}")
-    st.write(f"**Entry logic:** {strategy['entry']}")
-    st.write(f"**Exit logic:** {strategy['exit']}")
-    st.write(f"**Stop logic:** {strategy['stop_logic']}")
-    st.write(f"**Target logic:** {strategy['target_logic']}")
-    st.write(f"**Preferred session:** {strategy['preferred_session']}")
-    st.write(f"**Preferred timeframe:** {strategy['preferred_timeframe']}")
-    st.write(f"**Preferred regime:** {strategy['preferred_regime']}")
-    st.write(f"**Known weaknesses:** {strategy['weaknesses']}")
-    st.write(f"**Risk considerations:** {strategy['risk_considerations']}")
-    st.write(f"**Why not trading:** {selected['Why not trading']}")
-    evidence = resolution_detail(selected_symbol)
-    if evidence and evidence.get("classification") == "AMBIGUOUS":
-        candidates = evidence.get("candidates")
-        if isinstance(candidates, list):
-            st.write("**DQ-03 top candidates (selection blocked):**")
-            st.dataframe(candidates, hide_index=True, width="stretch")
-    st.write(
-        "**Research results:** Local evidence is shown only when a verified artifact is available."
-    )
-    st.write(
-        "**Demo results:** DEMO_NOT_STARTED until a separate permitted registration generates evidence."
-    )

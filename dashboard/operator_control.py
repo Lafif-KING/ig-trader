@@ -15,7 +15,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 STORE_PATH = ROOT / ".runtime" / "demo_operator" / "demo_execution.sqlite"
-_ALLOWED_COMMANDS = frozenset({"start", "stop", "kill", "flatten"})
+_ALLOWED_COMMANDS = frozenset({"start", "pause", "resume", "stop", "kill", "flatten"})
 
 
 def controls_enabled() -> bool:

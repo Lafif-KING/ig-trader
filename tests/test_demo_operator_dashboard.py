@@ -35,7 +35,7 @@ def _app(monkeypatch, *, local_controls: bool) -> AppTest:
         monkeypatch.delenv("DEMO_OPERATOR_LOCAL", raising=False)
         monkeypatch.delenv("DASHBOARD_HOSTED", raising=False)
     app_test = AppTest.from_file(ROOT / "dashboard" / "app.py").run(timeout=15)
-    app_test.sidebar.radio[0].set_value("Demo Operator").run(timeout=15)
+    app_test.sidebar.radio[0].set_value("DEMO OPERATOR").run(timeout=15)
     assert not app_test.exception
     return app_test
 
@@ -55,14 +55,21 @@ def test_demo_operator_controls_render_only_in_explicit_local_mode(monkeypatch) 
 
     assert {
         "START DEMO ROBOT",
-        "STOP ROBOT",
+        "PAUSE NEW ENTRIES",
+        "RESUME",
+        "STOP",
         "EMERGENCY KILL",
-        "CLOSE ALL DEMO POSITIONS",
+        "FLATTEN ROBOT POSITIONS",
     } <= labels
     assert "START LIVE" not in labels
+    assert next(button for button in app_test.button if button.label == "START DEMO ROBOT").disabled
+    flatten = next(
+        button for button in app_test.button if button.label == "FLATTEN ROBOT POSITIONS"
+    )
+    assert flatten.disabled
 
 
-def test_local_start_button_uses_controller_bridge_not_dashboard_broker_code(monkeypatch) -> None:
+def test_local_kill_button_uses_controller_bridge_not_dashboard_broker_code(monkeypatch) -> None:
     monkeypatch.setattr(
         demo_operator_page,
         "invoke_local_controller",
@@ -70,11 +77,31 @@ def test_local_start_button_uses_controller_bridge_not_dashboard_broker_code(mon
     )
     app_test = _app(monkeypatch, local_controls=True)
 
-    next(button for button in app_test.button if button.label == "START DEMO ROBOT").click().run(
+    next(button for button in app_test.button if button.label == "EMERGENCY KILL").click().run(
         timeout=15
     )
 
-    assert "controller bridge received start" in _rendered(app_test)
+    assert "controller bridge received kill" in _rendered(app_test)
+
+
+def test_flatten_requires_explicit_confirmation_before_using_controller_bridge(monkeypatch) -> None:
+    monkeypatch.setattr(
+        demo_operator_page,
+        "invoke_local_controller",
+        lambda command: f"controller bridge received {command}",
+    )
+    app_test = _app(monkeypatch, local_controls=True)
+    flatten = next(
+        button for button in app_test.button if button.label == "FLATTEN ROBOT POSITIONS"
+    )
+    assert flatten.disabled
+
+    app_test.checkbox[0].set_value(True).run(timeout=15)
+    next(
+        button for button in app_test.button if button.label == "FLATTEN ROBOT POSITIONS"
+    ).click().run(timeout=15)
+
+    assert "controller bridge received flatten" in _rendered(app_test)
 
 
 def test_operator_snapshot_is_file_only_and_filters_unknown_fields(tmp_path: Path) -> None:

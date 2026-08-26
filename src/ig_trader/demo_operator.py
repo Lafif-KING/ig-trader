@@ -100,6 +100,13 @@ class DemoOperatorSnapshot:
     last_successful_sync: str | None = None
     last_confirmation: str | None = None
     kill_switch_state: str = KillSwitchState.BLOCKING.value
+    execution_authority: str = "OFF"
+    approved_demo_epic_count: int = 0
+    approved_demo_strategy_count: int = 0
+    risk_configuration_status: str = "UNKNOWN"
+    reconciliation_status: str = "UNKNOWN"
+    working_orders: int | None = None
+    last_critical_error: str | None = None
     message: str = "No local Demo worker has written a snapshot."
     positions: tuple[dict[str, object], ...] = ()
     alerts: tuple[str, ...] = ()
@@ -165,7 +172,7 @@ class SQLiteWorkerRegistry:
             existing = self._current_in_transaction(connection)
             if existing.kill_switch_state is KillSwitchState.BLOCKING:
                 raise DemoOperatorError("EMERGENCY KILL is blocking Demo robot start")
-            if existing.state in {"STARTING", "RUNNING", "STOP_REQUESTED"}:
+            if existing.state in {"STARTING", "RUNNING", "PAUSED", "STOP_REQUESTED"}:
                 if existing.pid is not None and _pid_alive(existing.pid):
                     if (
                         existing.heartbeat_at is None
@@ -201,7 +208,11 @@ class SQLiteWorkerRegistry:
         with closing(self._connection()) as connection, connection:
             connection.execute("BEGIN IMMEDIATE")
             state = self._current_in_transaction(connection)
-            if state.pid != worker_pid or state.state not in {"RUNNING", "STOP_REQUESTED"}:
+            if state.pid != worker_pid or state.state not in {
+                "RUNNING",
+                "PAUSED",
+                "STOP_REQUESTED",
+            }:
                 raise DemoOperatorError("Demo worker ownership cannot be proven")
             self._write(
                 connection,
@@ -218,7 +229,7 @@ class SQLiteWorkerRegistry:
         with closing(self._connection()) as connection, connection:
             connection.execute("BEGIN IMMEDIATE")
             state = self._current_in_transaction(connection)
-            if state.state in {"RUNNING", "STARTING"}:
+            if state.state in {"RUNNING", "PAUSED", "STARTING"}:
                 self._write(
                     connection,
                     "STOP_REQUESTED",
@@ -227,6 +238,50 @@ class SQLiteWorkerRegistry:
                     state.started_at or now,
                     state.last_error,
                 )
+
+    def pause_new_entries(self) -> None:
+        """Pause entry evaluation while the existing worker keeps reconciling."""
+
+        now = datetime.now(UTC)
+        with closing(self._connection()) as connection, connection:
+            connection.execute("BEGIN IMMEDIATE")
+            state = self._current_in_transaction(connection)
+            if state.kill_switch_state is KillSwitchState.BLOCKING:
+                raise DemoOperatorError("EMERGENCY KILL blocks resume and entry state changes")
+            if state.state != "RUNNING":
+                raise DemoOperatorError("Demo robot is not running and cannot be paused")
+            self._write(
+                connection,
+                "PAUSED",
+                state.pid,
+                now,
+                state.started_at or now,
+                "New entries paused; reconciliation remains active.",
+            )
+
+    def resume_new_entries(self) -> None:
+        """Resume a paused worker only; this never releases Emergency Kill."""
+
+        now = datetime.now(UTC)
+        with closing(self._connection()) as connection, connection:
+            connection.execute("BEGIN IMMEDIATE")
+            state = self._current_in_transaction(connection)
+            if state.kill_switch_state is KillSwitchState.BLOCKING:
+                raise DemoOperatorError("EMERGENCY KILL must be released outside the dashboard")
+            if state.state != "PAUSED":
+                raise DemoOperatorError("Demo robot is not paused and cannot be resumed")
+            if state.pid is None or not _pid_alive(state.pid):
+                raise DemoOperatorError("paused Demo worker process cannot be proven alive")
+            if state.heartbeat_at is None or now - state.heartbeat_at > HEARTBEAT_MAX_AGE:
+                raise DemoOperatorError("paused Demo worker heartbeat is stale")
+            self._write(
+                connection,
+                "RUNNING",
+                state.pid,
+                now,
+                state.started_at or now,
+                None,
+            )
 
     def emergency_kill(self) -> None:
         now = datetime.now(UTC)
@@ -398,6 +453,8 @@ class DemoRobotController:
         account = transport.get_account()
         self._verify_account(account)
         positions = transport.list_position_details()
+        registrations = approved_demo_execution_registry()
+        documents, reconciliation_status = self._position_documents(positions)
         snapshot = DemoOperatorSnapshot(
             rest_status="CONNECTED",
             streaming_status="DISCONNECTED",
@@ -409,8 +466,13 @@ class DemoRobotController:
             total_open_pnl=_text_decimal(account.profit_loss),
             last_successful_sync=_timestamp(datetime.now(UTC)),
             kill_switch_state=self.registry.current().kill_switch_state.value,
-            message="Demo endpoint and expected account identity verified by a read-only preflight.",
-            positions=tuple(_position_document(item) for item in positions),
+            message=(
+                "Demo endpoint and expected account identity verified by a read-only preflight."
+            ),
+            approved_demo_epic_count=len({item.epic for item in registrations}),
+            approved_demo_strategy_count=len(registrations),
+            reconciliation_status=reconciliation_status,
+            positions=documents,
             alerts=(
                 "Streaming is not connected; new entries remain blocked until a single controlled "
                 "streaming session is proven current.",
@@ -460,6 +522,34 @@ class DemoRobotController:
                 robot_state=state.state,
                 kill_switch_state=state.kill_switch_state.value,
                 message="Graceful stop requested; the worker will reconcile before exit.",
+            )
+        )
+        return state
+
+    def pause(self) -> WorkerState:
+        """Block new entries but leave safe position management running."""
+
+        self.registry.pause_new_entries()
+        state = self.registry.current()
+        self.write_snapshot(
+            DemoOperatorSnapshot(
+                robot_state=state.state,
+                kill_switch_state=state.kill_switch_state.value,
+                message="New entries paused; reconciliation and safe position management continue.",
+            )
+        )
+        return state
+
+    def resume(self) -> WorkerState:
+        """Resume an existing paused worker; Emergency Kill remains separate."""
+
+        self.registry.resume_new_entries()
+        state = self.registry.current()
+        self.write_snapshot(
+            DemoOperatorSnapshot(
+                robot_state=state.state,
+                kill_switch_state=state.kill_switch_state.value,
+                message="Pause released. Every execution gate is still required for new entries.",
             )
         )
         return state
@@ -535,20 +625,32 @@ class DemoRobotController:
                 execution.reconcile_close(record.request.intent_id)
             else:
                 execution.reconcile_open(record.request.intent_id)
-        if approved_demo_execution_registry():
+        registrations = approved_demo_execution_registry()
+        if registrations:
             raise DemoOperatorError(
                 "a Demo execution registry needs a reviewed worker strategy adapter"
             )
+        documents, reconciliation_status = self._position_documents(positions)
         self.write_snapshot(
             DemoOperatorSnapshot(
                 rest_status="CONNECTED",
                 streaming_status="DISCONNECTED",
-                robot_state="RUNNING",
+                robot_state=state.state,
                 total_open_positions=len(positions),
                 last_successful_sync=_timestamp(datetime.now(UTC)),
                 kill_switch_state=state.kill_switch_state.value,
-                message="Monitoring and reconciliation active; no qualified execution registration exists.",
-                positions=tuple(_position_document(item) for item in positions),
+                message=(
+                    "New entries paused; monitoring and reconciliation remain active."
+                    if state.state == "PAUSED"
+                    else (
+                        "Monitoring and reconciliation active; no qualified execution "
+                        "registration exists."
+                    )
+                ),
+                approved_demo_epic_count=len({item.epic for item in registrations}),
+                approved_demo_strategy_count=len(registrations),
+                reconciliation_status=reconciliation_status,
+                positions=documents,
                 alerts=("STALE PRICE FEED: new entries are blocked.",),
             )
         )
@@ -559,7 +661,7 @@ class DemoRobotController:
         try:
             while True:
                 state = self.worker_once(worker_pid)
-                if state.state != "RUNNING":
+                if state.state not in {"RUNNING", "PAUSED"}:
                     return
                 time.sleep(WORKER_POLL_SECONDS)
         except Exception:
@@ -576,6 +678,22 @@ class DemoRobotController:
             encoding="utf-8",
         )
         temporary.replace(self.snapshot_path)
+
+    def _position_documents(
+        self, positions: tuple[object, ...]
+    ) -> tuple[tuple[dict[str, object], ...], str]:
+        records = {
+            record.position.deal_id: record
+            for record in self.store.all_records()
+            if record.lifecycle is DemoExecutionLifecycle.OPEN_RECONCILED
+            and record.position is not None
+        }
+        documents = tuple(
+            _position_document(position, records.get(position.deal_id)) for position in positions
+        )
+        reconciled = all(item.get("ownership") == "RECONCILED" for item in documents)
+        status = "NORMAL" if reconciled else "BLOCKED"
+        return documents, status
 
     def _validate_start_configuration(self) -> None:
         if not self.config.control_enabled or self.config.hosted:
@@ -680,7 +798,7 @@ def _launch_worker(store_path: Path) -> int:
     return process.pid
 
 
-def _position_document(position: object) -> dict[str, object]:
+def _position_document(position: object, record: object | None = None) -> dict[str, object]:
     values = {
         "instrument": getattr(position, "instrument_name", None),
         "epic": getattr(position, "epic", None),
@@ -693,7 +811,15 @@ def _position_document(position: object) -> dict[str, object]:
         "offer": _text_decimal(getattr(position, "offer", None)),
         "currency": getattr(position, "currency", None),
         "deal_id": _abbreviated(getattr(position, "deal_id", None)),
+        "ownership": "RECONCILED" if record is not None else "UNKNOWN",
     }
+    if record is not None:
+        request = getattr(record, "request", None)
+        if request is not None:
+            values["strategy_id"] = getattr(request, "configuration_identity", None)
+            created_at = getattr(request, "created_at", None)
+            if isinstance(created_at, datetime):
+                values["entry_timestamp"] = _timestamp(created_at)
     return {key: value for key, value in values.items() if value is not None}
 
 
@@ -744,6 +870,10 @@ def _run_command(arguments: argparse.Namespace) -> int:
         print(json.dumps(asdict(controller.start()), default=str, sort_keys=True))
     elif arguments.command == "stop":
         print(json.dumps(asdict(controller.stop()), default=str, sort_keys=True))
+    elif arguments.command == "pause":
+        print(json.dumps(asdict(controller.pause()), default=str, sort_keys=True))
+    elif arguments.command == "resume":
+        print(json.dumps(asdict(controller.resume()), default=str, sort_keys=True))
     elif arguments.command == "kill":
         print(json.dumps(asdict(controller.emergency_kill()), default=str, sort_keys=True))
     elif arguments.command == "release-kill":
@@ -769,6 +899,8 @@ def parser() -> argparse.ArgumentParser:
     for command in (
         "preflight",
         "start",
+        "pause",
+        "resume",
         "stop",
         "kill",
         "release-kill",

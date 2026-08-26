@@ -9,6 +9,18 @@ Current source SHA: verify with `git rev-parse origin/main`.
 
 G4 COMPLETE — ready for `SHADOW_DEMO` preparation.
 
+## UI-MVP Control Center
+
+- The local Streamlit Control Center engineering implementation is complete on
+  its isolated UI-MVP branch, pending full runtime validation after the locked
+  dependency environment is restored. It presents prepared read-only operator
+  state, not a second execution engine.
+- It clearly reports 0 historically qualified strategies, 0 Demo-approved
+  strategies, and execution authority `OFF`. No UI action grants Demo or Live
+  authority.
+- Alpha qualification remains a separate research workstream and is unresolved.
+  This work does not mark the project Go-Live ready.
+
 ## PostgreSQL
 
 - Migrations 001 and 002 complete.

@@ -146,8 +146,27 @@ def load_demo_operator_snapshot(path: Path = DEFAULT_SNAPSHOT_PATH) -> DemoOpera
         "message",
         "positions",
         "alerts",
+        "execution_authority",
+        "approved_demo_epic_count",
+        "approved_demo_strategy_count",
+        "risk_configuration_status",
+        "reconciliation_status",
+        "working_orders",
+        "last_critical_error",
     }
-    values = {key: value for key, value in document.items() if key in allowed and _safe(value)}
+    values: dict[str, object] = {}
+    for key in allowed:
+        value = document.get(key)
+        if key == "positions":
+            positions = _safe_positions(value)
+            if positions is not None:
+                values[key] = positions
+        elif key == "alerts":
+            alerts = _safe_text_list(value)
+            if alerts is not None:
+                values[key] = alerts
+        elif _safe(value):
+            values[key] = value
     return DemoOperatorSnapshot(bool(values), values)
 
 
@@ -243,11 +262,49 @@ def resolution_detail(
 
 
 def _safe(value: object) -> bool:
-    if value is None or isinstance(value, str | int | float | bool):
-        return True
-    if isinstance(value, list):
-        return all(_safe(item) for item in value)
-    return False
+    return value is None or isinstance(value, str | int | float | bool)
+
+
+def _safe_text_list(value: object) -> list[str] | None:
+    if not isinstance(value, list) or not all(isinstance(item, str) for item in value):
+        return None
+    return list(value)
+
+
+def _safe_positions(value: object) -> list[dict[str, object]] | None:
+    """Keep only the narrow, operator-safe broker fields written by DQ-02."""
+
+    if not isinstance(value, list):
+        return None
+    allowed = {
+        "instrument",
+        "epic",
+        "direction",
+        "size",
+        "entry",
+        "entry_timestamp",
+        "stop",
+        "target",
+        "bid",
+        "offer",
+        "currency",
+        "deal_id",
+        "ownership",
+        "strategy_id",
+        "initial_risk",
+        "current_risk",
+        "unrealized_pnl",
+        "current_r",
+        "duration",
+    }
+    result: list[dict[str, object]] = []
+    for item in value:
+        if not isinstance(item, dict):
+            return None
+        sanitized = {key: item[key] for key in allowed if key in item and _safe(item[key])}
+        if sanitized:
+            result.append(sanitized)
+    return result
 
 
 def _load_json_object(path: Path) -> dict[str, object] | None:

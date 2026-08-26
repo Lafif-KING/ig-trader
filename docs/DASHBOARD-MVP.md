@@ -6,6 +6,12 @@ cloud, database, execution-lease, Demo, or Live authority.
 
 ## Start it locally on Windows
 
+For the UI-MVP, double-click `tools\launch_control_center.cmd` in this clean
+checkout. It starts only the local Streamlit process and opens the browser.
+It does not start the trading robot, contact IG, or make a broker mutation.
+Closing the browser does not send a Stop, Kill, Flatten, or any broker action.
+Use `Ctrl+C` in the launcher window when you want to stop the local dashboard.
+
 1. In **Windows PowerShell**, open the clean dashboard clone—not a protected
    trading checkout—and run:
 
@@ -39,6 +45,28 @@ The MVP reads committed `project/gates.json` and optional public GitHub status.
 It makes no broker, Lightstreamer, PostgreSQL, Azure, or execution calls. A
 GitHub workflow pass is technical evidence only; it never enables Shadow, Demo,
 or Live execution.
+
+## UI-MVP operator navigation
+
+The local Control Center has eight operator pages: **Cockpit**, **Market
+Scanner**, **Strategy Center**, **Positions**, **Performance**, **Decision
+Explorer**, **Risk & Health**, and **Demo Operator**.
+
+The normal source is reviewed project gates plus a sanitized local DQ-02
+operator snapshot. It does not silently substitute fake data. Set
+`CONTROL_CENTER_MODE=MOCK` only when developing the interface; every mock page
+then displays `SIMULATED UI DATA` and all Demo controls remain disabled.
+
+Optional external research summaries are supplied only through the local
+`CONTROL_CENTER_RESEARCH_SUMMARIES` environment variable, which may list JSON
+files separated by the normal Windows path separator. They are read-only status
+evidence: even a file that claims approval cannot grant execution authority.
+
+The Start button remains disabled until all documented authority gates pass. In
+the current project state, it is disabled because the approved Demo strategy
+registry is empty and execution authority is OFF. The Control Center never
+calls an IG order endpoint; its local controls invoke only the existing DQ-02
+controller boundary.
 
 ## Automatic updates and degraded mode
 

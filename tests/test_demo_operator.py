@@ -168,6 +168,55 @@ def test_controller_starts_one_worker_and_kill_blocks_another_start(tmp_path: Pa
         controller.start()
 
 
+def test_pause_keeps_worker_state_distinct_from_stop_and_emergency_kill(
+    tmp_path: Path, monkeypatch
+) -> None:
+    monkeypatch.setattr("src.ig_trader.demo_operator._pid_alive", lambda _pid: True)
+    controller = _controller(tmp_path, FakeTransport())
+    controller.start()
+
+    paused = controller.pause()
+    assert paused.state == "PAUSED"
+    assert paused.kill_switch_state.value == "RELEASED"
+
+    resumed = controller.resume()
+    assert resumed.state == "RUNNING"
+    assert resumed.kill_switch_state.value == "RELEASED"
+
+    controller.pause()
+
+    stopped = controller.stop()
+    assert stopped.state == "STOP_REQUESTED"
+    assert stopped.kill_switch_state.value == "RELEASED"
+
+    killed = controller.emergency_kill()
+    assert killed.state == "SAFE_STOP"
+    assert killed.kill_switch_state.value == "BLOCKING"
+
+
+def test_paused_worker_continues_reconciliation_without_enabling_entries(
+    tmp_path: Path, monkeypatch
+) -> None:
+    monkeypatch.setattr("src.ig_trader.demo_operator._pid_alive", lambda _pid: True)
+    transport = FakeTransport()
+    controller = _controller(tmp_path, transport)
+    controller.start()
+    controller.pause()
+    position_reads_before = transport.position_calls
+
+    state = controller.worker_once(4242)
+
+    assert state.state == "PAUSED"
+    assert transport.position_calls > position_reads_before
+    snapshot = controller.snapshot_path.read_text(encoding="utf-8")
+    assert '"robot_state":"PAUSED"' in snapshot
+    assert "New entries paused; monitoring and reconciliation remain active." in snapshot
+
+    controller.emergency_kill()
+    with pytest.raises(DemoOperatorError, match="EMERGENCY KILL"):
+        controller.resume()
+
+
 def test_worker_reconciles_only_and_stale_prices_block_entries(tmp_path: Path) -> None:
     transport = FakeTransport()
     controller = _controller(tmp_path, transport)

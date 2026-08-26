@@ -128,3 +128,177 @@ class ShadowDataStatus:
 
     status: Literal["DATA_NOT_AVAILABLE"]
     reason: str
+
+
+# Control Center operator-state contracts.  These are presentation models only:
+# they cannot carry a client, an execution permit, or an order request.
+OperatorStatus = Literal["NORMAL", "WARNING", "BLOCKED", "UNKNOWN"]
+
+
+@dataclass(frozen=True)
+class StartGate:
+    """The rendered result of independently checked start prerequisites."""
+
+    enabled: bool
+    blockers: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class RobotState:
+    environment: str
+    state: str
+    execution_authority: str
+    kill_switch: str
+    singleton_status: OperatorStatus
+    last_decision: str
+
+
+@dataclass(frozen=True)
+class BrokerState:
+    rest_status: str
+    streaming_status: str
+    account_status: str
+    last_successful_read: str
+    source_label: str
+
+
+@dataclass(frozen=True)
+class InstrumentState:
+    instrument: str
+    epic: str
+    asset_class: str
+    market_status: str
+    bid: str
+    ask: str
+    spread: str
+    data_freshness: str
+    streaming: str
+    research_status: str
+    approved_strategy: str
+    strategy_status: str
+    signal: str
+    block_reason: str
+
+
+@dataclass(frozen=True)
+class StrategyState:
+    strategy_id: str
+    family: str
+    instrument: str
+    timeframe: str
+    historical_status: str
+    demo_approval: str
+    execution_authority: str
+    trade_count: str
+    oos_expectancy: str
+    walk_forward_expectancy: str
+    profit_factor: str
+    max_drawdown: str
+    stress_status: str
+    reason: str
+    source_label: str
+
+
+@dataclass(frozen=True)
+class DecisionState:
+    timestamp: str
+    instrument: str
+    outcome: str
+    primary_reason: str
+    market_tradeable: str = "NOT AVAILABLE"
+    data_fresh: str = "NOT AVAILABLE"
+    strategy_qualified: str = "NOT AVAILABLE"
+    strategy_approved: str = "NOT AVAILABLE"
+    signal_detected: str = "NOT AVAILABLE"
+    opportunity_acceptable: str = "NOT AVAILABLE"
+    spread_acceptable: str = "NOT AVAILABLE"
+    risk_available: str = "NOT AVAILABLE"
+    portfolio_exposure: str = "NOT AVAILABLE"
+    kill_switch_released: str = "NOT AVAILABLE"
+    execution_authority: str = "NOT AVAILABLE"
+
+
+@dataclass(frozen=True)
+class PositionState:
+    instrument: str
+    epic: str
+    direction: str
+    size: str
+    deal_id: str
+    strategy_id: str
+    entry_timestamp: str
+    entry_price: str
+    bid: str
+    ask: str
+    executable_mark: str
+    stop: str
+    target: str
+    initial_risk: str
+    current_risk: str
+    unrealized_pnl: str
+    pnl_currency: str
+    current_r: str
+    duration: str
+    lifecycle: str
+
+
+@dataclass(frozen=True)
+class PerformanceState:
+    available: bool
+    source_label: str
+    message: str
+    metrics: tuple[tuple[str, str], ...] = ()
+    breakdowns: tuple[tuple[str, str], ...] = ()
+
+
+@dataclass(frozen=True)
+class RiskState:
+    portfolio_risk: str
+    daily_pnl: str
+    daily_loss_limit: str
+    reconciliation_status: OperatorStatus
+    open_positions: int
+    working_orders: str
+    critical_error: str
+
+
+@dataclass(frozen=True)
+class SystemHealthState:
+    rest_health: OperatorStatus
+    streaming_health: OperatorStatus
+    price_freshness: OperatorStatus
+    worker_health: OperatorStatus
+    execution_authority: OperatorStatus
+    approved_epic_count: int
+    approved_strategy_count: int
+    source_label: str
+
+
+@dataclass(frozen=True)
+class ResearchStatus:
+    research_id: str
+    status: str
+    tested: str
+    qualified: str
+    message: str
+    source_label: str
+
+
+@dataclass(frozen=True)
+class ControlCenterState:
+    """All state a page needs, prepared by read-only source adapters."""
+
+    source_label: str
+    simulated: bool
+    robot: RobotState
+    broker: BrokerState
+    instruments: tuple[InstrumentState, ...]
+    strategies: tuple[StrategyState, ...]
+    decisions: tuple[DecisionState, ...]
+    positions: tuple[PositionState, ...]
+    unclassified_broker_position_count: int
+    performance: PerformanceState
+    risk: RiskState
+    health: SystemHealthState
+    research: tuple[ResearchStatus, ...]
+    start_gate: StartGate
