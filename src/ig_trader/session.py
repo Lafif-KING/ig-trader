@@ -20,6 +20,8 @@ class SessionManager:
         *,
         request_observer: Callable[[str, str], None] | None = None,
         response_error_observer: Callable[[Any], None] | None = None,
+        request_version_observer: Callable[[str, str, str | None], None] | None = None,
+        max_retries: int = 3,
     ) -> None:
         """Initialize session manager."""
         self.cst: str | None = None
@@ -31,7 +33,9 @@ class SessionManager:
         self.http_client = HTTPClient(
             base_url=settings.ig_base_url,
             api_key=settings.ig_api_key,
+            max_retries=max_retries,
             request_observer=request_observer,
+            request_version_observer=request_version_observer,
         )
 
     def login(self) -> bool:
@@ -91,7 +95,7 @@ class SessionManager:
         logger.info("logout_start")
         response = self.http_client.delete(
             "session",
-            headers=self._get_auth_headers(),
+            headers={**self._get_auth_headers(), "VERSION": "1"},
         )
 
         if response.status_code in (200, 204):
@@ -102,7 +106,21 @@ class SessionManager:
             self.token_expiry = None
             logger.info("logout_success")
             return True
+        self._notify_response_error(response)
         return False
+
+    def set_response_error_observer(self, observer: Callable[[Any], None] | None) -> None:
+        """Install a narrowly scoped observer for non-success API responses."""
+
+        self._response_error_observer = observer
+
+    def set_request_version_observer(
+        self,
+        observer: Callable[[str, str, str | None], None] | None,
+    ) -> None:
+        """Observe only a final outbound ``VERSION`` value, never auth headers."""
+
+        self.http_client.set_request_version_observer(observer)
 
     def is_authenticated(self) -> bool:
         """Check if session is currently authenticated and not expired."""
@@ -118,7 +136,24 @@ class SessionManager:
         headers = kwargs.pop("headers", {})
         headers.update(self._get_auth_headers())
 
-        return self.http_client._request(method, endpoint.lstrip("/"), headers=headers, **kwargs)
+        response = self.http_client._request(
+            method,
+            endpoint.lstrip("/"),
+            headers=headers,
+            **kwargs,
+        )
+        self._notify_response_error(response)
+        return response
+
+    def _notify_response_error(self, response: Any) -> None:
+        """Report only a non-success response to the configured local observer."""
+
+        try:
+            failed = not 200 <= response.status_code < 300
+        except Exception:
+            return
+        if failed and self._response_error_observer is not None:
+            self._response_error_observer(response)
 
     def _get_auth_headers(self) -> dict:
         """Get authorization headers for authenticated requests."""

@@ -17,6 +17,7 @@ tests/__pycache__/
 test_connection.py
 .pytest_cache/
 .runtime/
+runtime/
 **/__pycache__/
 *.py[cod]
 trading.db
@@ -29,3 +30,4 @@ trading.db
 *.sqlite-shm
 artifacts/strategy_lab/
 artifacts/dq03/
+artifacts/shadow01/

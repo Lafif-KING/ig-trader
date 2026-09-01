@@ -1,0 +1,66 @@
+{
+  "schema_version": "shadow01-strategy-config/1.0",
+  "tournament_version": "SHADOW01-V1",
+  "execution_authority": "OFF",
+  "universe": [
+    {"symbol": "EURUSD", "asset_class": "FX"},
+    {"symbol": "GBPUSD", "asset_class": "FX"},
+    {"symbol": "EURGBP", "asset_class": "FX"},
+    {"symbol": "USDJPY", "asset_class": "FX"},
+    {"symbol": "EURJPY", "asset_class": "FX"},
+    {"symbol": "GBPJPY", "asset_class": "FX"},
+    {"symbol": "AUDUSD", "asset_class": "FX"},
+    {"symbol": "NZDUSD", "asset_class": "FX"},
+    {"symbol": "USDCAD", "asset_class": "FX"},
+    {"symbol": "USDCHF", "asset_class": "FX"},
+    {"symbol": "EURCHF", "asset_class": "FX"},
+    {"symbol": "EURAUD", "asset_class": "FX"},
+    {"symbol": "GBPAUD", "asset_class": "FX"},
+    {"symbol": "AUDJPY", "asset_class": "FX"},
+    {"symbol": "CADJPY", "asset_class": "FX"},
+    {"symbol": "CHFJPY", "asset_class": "FX"},
+    {"symbol": "XAUUSD", "asset_class": "METAL"},
+    {"symbol": "XAGUSD", "asset_class": "METAL"},
+    {"symbol": "US500", "asset_class": "INDEX"},
+    {"symbol": "USTECH100", "asset_class": "INDEX"}
+  ],
+  "decision_clock": {
+    "timezone": "America/New_York",
+    "local_time": "17:10",
+    "frequency": "COMPLETED_MARKET_DAY",
+    "asset_class_overrides": {}
+  },
+  "history": {
+    "resolution": "DAY",
+    "target_completed_observations": 300,
+    "minimum_completed_observations": 61
+  },
+  "technical": {
+    "return_windows": [1, 5, 20, 60],
+    "volatility_window": 20,
+    "atr_window": 20,
+    "epsilon": 0.000000000001,
+    "trend_strength_cap": 3.0,
+    "trend_formula": "normalized_n = return_n / max(population_realized_volatility_n, epsilon); direction is LONG only when normalized_20 and normalized_60 are both positive, SHORT only when both are negative, otherwise FLAT; strength = min(trend_strength_cap, (abs(normalized_20) + abs(normalized_60)) / 2)."
+  },
+  "reversion": {
+    "return_window": 5,
+    "percentile_lookback": 252,
+    "lower_percentile": 0.1,
+    "upper_percentile": 0.9,
+    "percentile_formula": "percentile = (count(prior_values < current_value) + 0.5 * count(prior_values == current_value)) / count(prior_values); prior_values are the latest valid normalized 5-session returns and exclude current_value."
+  },
+  "quality": {
+    "maximum_price_age_seconds": 7200,
+    "minimum_completed_observations": 61
+  },
+  "cost": {
+    "high_spread_to_atr_fraction": 0.1
+  },
+  "context": {
+    "material_opposition_score": 0.6
+  },
+  "policies": {
+    "trend_minimum_strength": 0.25
+  }
+}

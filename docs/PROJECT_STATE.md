@@ -1,8 +1,8 @@
 # IG Trader project state
 
-Updated: 2026-08-25
+Updated: 2026-09-01
 Authoritative branch: `origin/main`
-Last verified source baseline: `95fbc14f5c99a2715ceb6085af29c99e62c9793f`
+Last verified source baseline: `4546ba848f45b765ec01c88afb945a8388d4657f`
 Current source SHA: verify with `git rev-parse origin/main`.
 
 ## Current gate
@@ -175,3 +175,81 @@ orders, and positions are all 0.
   is not broad Strategy Lab history. Until a reviewed local or external
   dataset is supplied, research remains `DATA_NOT_AVAILABLE` and exact cost
   models remain `COST_MODEL_INCOMPLETE`.
+
+## Shadow Tournament 01 (isolated engineering)
+
+- SHADOW01-V1 is implemented only in the isolated
+  `ig-trader-shadow01-clean` worktree. It has a frozen 20-market configuration,
+  `execution_authority: OFF`, a strict read-only broker boundary, and a
+  dedicated ignored SQLite store; it does not alter the active single-market
+  execution bot, `PAPER_TRADING`, Demo authority, Live authority, or Azure.
+- The observer records causal technical/context/quality/cost evidence and four
+  deterministic shadow policies only after a separately human-created epoch.
+  Later anchored observation cycles resolve only due completed-session outcome
+  labels; they do not backfill historical prospective decisions or write
+  provisional blocked labels.
+- At Gate-01, Shadow01 recovered and verified the authoritative linked DQ-03 20-market
+  artifact chain from a separate clean source worktree. The three reviewed,
+  non-secret artifacts are locally imported by hash only; Shadow01 has no
+  runtime dependency on that source worktree. That gate established 20
+  verified Shadow markets and zero unavailable substitutions. No credentials
+  were copied from another worktree.
+- Project-wide truth is unchanged: historically qualified strategies = 0,
+  Demo-approved strategies = 0, and execution authority remains `OFF`.
+- Gate-02 added only isolated Shadow01 read-only smoke surfaces: a
+  DQ-03-bound four-market stream bridge with bounded restoration, a fully lazy
+  expected-Demo-account-guarded local stream factory, no-wait clock and bounded
+  historical warm-up diagnostics, and a supplied-facts
+  `DRY_RUN_NON_PROSPECTIVE` snapshot service. The diagnostics have no storage,
+  epoch, decision, outcome, monitor, robot, order, Live, or Azure path. The
+  Gate-02 implementation and its tests did not authenticate to IG, construct a
+  real session/client, or make market/history/stream calls; the bounded live
+  smoke remains a separate human gate.
+- Gate-07 makes the canonical live-quote source explicit without activating
+  it: REST V4 remains verified metadata only, including an intentionally
+  unordered `snapshot.priceLadder`, while IG Price streaming Tier-1 fields
+  provide live bid/ask/timestamp observations. The registry-bound bridge can
+  register all 20 verified stream-capable markets, preserves bounded
+  representative reconnect coverage, adds no REST live-price polling, and
+  keeps the non-persisting dry snapshot and execution authority `OFF`.
+- Gate-08 replaces the stream's former independent REST-session lifecycle
+  with immutable, redacted handoff material from the already-authenticated
+  read-only REST adapter. The stream owns Lightstreamer lifecycle only; normal
+  smoke budgeting is one REST authentication plus one final REST logout. Its
+  only subscriptions are `PRICE`/`MERGE`/`Pricing` with the three reviewed
+  Tier-1 fields, initial MERGE-image registration is race-safe, and the report
+  has sanitized per-subscription callback/valid-quote evidence. It performs a
+  stream-only reconnect only for EURUSD, USDJPY, XAUUSD, and US500 after the
+  complete all-20 initial image. IG V2 DAY/300 parsing now accepts UTC
+  offset-free `snapshotTimeUTC` and excludes only a current-day midnight
+  candle, preserving 299 completed sessions for T1/M1/Q1 readiness. This is
+  not a live smoke result: IG calls, credentials changes, execution actions,
+  epoch creation, prospective decisions, and outcomes remain zero.
+- Gate-09 completed one bounded, read-only IG Demo contract proof using the
+  existing session-bound adapter: one authentication, EURUSD DAY/5 history,
+  one Price callback subscription, bounded stream cleanup, and one final
+  logout. It found the actual V2 `snapshotTime` slash datetime representation
+  and numeric-string Price callback fields, including a 13-digit millisecond
+  timestamp string. The narrow parsers and value-safe field/rejection reports
+  now cover exactly those representations. There were no account reads,
+  metadata reads, execution actions, credential/configuration changes,
+  database writes, epoch creation, prospective decisions, outcomes, Live, or
+  Azure actions. The engineering classification is
+  `SHADOW01_ENGINEERING_READY_FOR_STREAM_SMOKE_V9`; the all-20 Stream Smoke
+  V9 remains a separate authorization.
+- The final authorized live read-only smoke subsequently passed with the
+  expected Demo account, all 20 DQ-03 markets verified without substitution,
+  20 fresh valid canonical PRICE-stream quotes, four representative reconnects,
+  and DAY/300 history with 299 completed sessions for each representative.
+  The 17:10 America/New_York DST-aware clock passed for FX, METAL, US500, and
+  USTECH100. Normal smoke used 1 authentication, 1 account read, 20 V4
+  metadata reads, 4 history reads, no REST live-price reads, and 1 logout.
+  Broker-declared `openingHours` remained unavailable in the prior V2/V3
+  field-type evidence and is advisory only; a fresh valid canonical quote is
+  mandatory, and missing/stale/invalid/disconnected quotes result in
+  `NO_DECISION` with no retrospective backfill. The evidence record is frozen
+  in `docs/SHADOW01-V1-FREEZE-MANIFEST.json`.
+- The final smoke remained non-persisting: no tournament epoch, prospective
+  decision, or outcome was created; execution create/close/working-order/
+  position-update actions, Demo starts, Live, and Azure actions were all zero.
+  `execution_authority` remains `OFF`, as do Demo and Live authority.

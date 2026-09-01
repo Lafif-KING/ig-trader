@@ -30,6 +30,7 @@ class HTTPClient:
         timeout: float = 30.0,
         max_retries: int = 3,
         request_observer: Callable[[str, str], None] | None = None,
+        request_version_observer: Callable[[str, str, str | None], None] | None = None,
     ) -> None:
         """
         Initialize HTTP client.
@@ -45,12 +46,27 @@ class HTTPClient:
         self.timeout = timeout
         self.max_retries = max_retries
         self._request_observer = request_observer
+        self._request_version_observer = request_version_observer
         self.client = httpx.Client(
             base_url=base_url,
             timeout=timeout,
             headers={"X-IG-API-KEY": api_key},
             verify=build_system_ssl_context(),
         )
+
+    def set_request_version_observer(
+        self,
+        observer: Callable[[str, str, str | None], None] | None,
+    ) -> None:
+        """Observe only the outbound API version immediately before dispatch.
+
+        This deliberately exposes neither authentication headers nor the API
+        key.  It exists for narrow, value-safe transport-contract evidence.
+        """
+
+        if observer is not None and not callable(observer):
+            raise TypeError("request version observer must be callable")
+        self._request_version_observer = observer
 
     def get(self, endpoint: str, **kwargs: Any) -> httpx.Response:
         """GET request with retry logic."""
@@ -95,6 +111,10 @@ class HTTPClient:
 
                 if self._request_observer:
                     self._request_observer(method, endpoint)
+                if self._request_version_observer:
+                    headers = kwargs.get("headers")
+                    version = headers.get("VERSION") if isinstance(headers, dict) else None
+                    self._request_version_observer(method, endpoint, version)
                 response = self.client.request(method, endpoint, **kwargs)
 
                 logger.info(

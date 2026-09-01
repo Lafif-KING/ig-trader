@@ -1,0 +1,414 @@
+{
+  "base_main_sha": "4546ba848f45b765ec01c88afb945a8388d4657f",
+  "branch": "codex/shadow-tournament-01",
+  "canonicalization": "UTF-8 JSON; ensure_ascii=true; sort_keys=true; separators=(',', ':')",
+  "clock": {
+    "dst_aware": true,
+    "local_time": "17:10",
+    "timezone": "America/New_York"
+  },
+  "configuration": {
+    "canonical_fingerprint": "9487f45eef4e973ca2cbd7e2df95db0038d95bb6d6d690e58f2272386782b8f7",
+    "file_path": "shadow01_strategy_config.json",
+    "file_sha256": "5c0d0d1d6b9166041b9f3cfb354781c28349bb7b4016687a52f5a184b2aecd5a",
+    "fingerprint_algorithm": "SHA-256 over canonical frozen configuration JSON"
+  },
+  "declared_opening_hours": {
+    "demo_v2_v3_result": "instrument.openingHours present with null value",
+    "role": "ADVISORY_ONLY"
+  },
+  "evidence_thresholds": {
+    "EARLY_EVIDENCE": "30-99",
+    "EVALUABLE": ">=100",
+    "INSUFFICIENT_EVIDENCE": "<30"
+  },
+  "execution": {
+    "azure": "OFF",
+    "close": 0,
+    "create": 0,
+    "demo_approved_strategies": 0,
+    "demo_starts": 0,
+    "execution_authority": "OFF",
+    "historically_qualified_strategies": 0,
+    "live": "OFF",
+    "position_updates": 0,
+    "working_orders": 0
+  },
+  "freeze_fingerprint": "6a9a00470aa6bf6655cb74559bac619be45733de3a527290bd08133ad728ff0e",
+  "live_readonly_evidence": {
+    "canonical_quotes_valid": 20,
+    "clock_overall": "PASS",
+    "completed_representative_sessions": 299,
+    "history_rows_received_per_representative": 300,
+    "normal_rest_budget": {
+      "account": 1,
+      "authentication": 1,
+      "history": 4,
+      "logout": 1,
+      "rest_live_price_reads": 0,
+      "v4_metadata": 20
+    },
+    "representative_reconnects": [
+      "EURUSD",
+      "USDJPY",
+      "XAUUSD",
+      "US500"
+    ],
+    "status": "SHADOW01_LIVE_READONLY_SMOKE_PASS"
+  },
+  "no_quote_policy": {
+    "absent_stale_invalid_or_disconnected": "NO_DECISION",
+    "retrospective_backfill": "FORBIDDEN"
+  },
+  "outcome_horizons_completed_sessions": [
+    1,
+    3,
+    5,
+    10,
+    20
+  ],
+  "quote_source": {
+    "fields": [
+      "BIDPRICE1",
+      "ASKPRICE1",
+      "TIMESTAMP"
+    ],
+    "source": "IG PRICE stream"
+  },
+  "registry_evidence": {
+    "discovery_manifest_sha256": "24a8993ff0b2f8445a43de8a57da756cf02ddb73ea35642a3f6ab643ba62f635",
+    "history_validation_sha256": "af4cba0bb6d339bdace94bff01b26e337e47a7b12b31ae15c813baea021bb438",
+    "instrument_registry_sha256": "4c5ff69d303503f4561c45c5992c9368d5c64cb1a16e47001b2f4b80d60765ad",
+    "semantic_fingerprint": "7238f930990e7ff10e02df7ab83f7df9ab3c7309e34c45a7891a7a61b6f0490b",
+    "verified_instruments": 20
+  },
+  "rest_v4": "identity/status/metadata authority",
+  "schema_version": "shadow01-v1-freeze-manifest/1.0",
+  "source_inventory": [
+    {
+      "relative_path": ".gitignore",
+      "sha256": "e6a7568669fb60dc76c2a700ea25466212412de14961c0e3148ce05479d8fb25",
+      "size_bytes": 363
+    },
+    {
+      "relative_path": "dashboard/app.py",
+      "sha256": "3998f3a74d9a981585ebc604910f9ad0bfaa6b8c7a2eaa019d395acefa566046",
+      "size_bytes": 5744
+    },
+    {
+      "relative_path": "dashboard/pages/shadow_tournament.py",
+      "sha256": "7668beb495b1feaf5b7ee0793a24fdde1a90ab51aa3c1a6356dc6467ae724d25",
+      "size_bytes": 10435
+    },
+    {
+      "relative_path": "dashboard/shadow_tournament_control.py",
+      "sha256": "fc7988ad8a1a4bfd6df5b405882bdec790633139fff933a152fd1f167c4b4641",
+      "size_bytes": 7269
+    },
+    {
+      "relative_path": "dashboard/sources/shadow_tournament.py",
+      "sha256": "62e91dff4273a2c37d3b54fb1de60a0cb7480c0ff38c9a00e5de57f7c2ea280c",
+      "size_bytes": 8743
+    },
+    {
+      "relative_path": "docs/PROJECT_STATE.md",
+      "sha256": "c8c85b2bd87159fd32ef0a0352f3cce7b64235765a0d525478e953469c7fe6d8",
+      "size_bytes": 15407
+    },
+    {
+      "relative_path": "docs/SHADOW-TOURNAMENT-01.md",
+      "sha256": "c063f98cc2100d72710992a6a063eddace935b7b73945b0680dcd93407396d69",
+      "size_bytes": 27795
+    },
+    {
+      "relative_path": "shadow01_strategy_config.json",
+      "sha256": "5c0d0d1d6b9166041b9f3cfb354781c28349bb7b4016687a52f5a184b2aecd5a",
+      "size_bytes": 2516
+    },
+    {
+      "relative_path": "src/ig_trader/config.py",
+      "sha256": "62e12630e0d9a9a8e61ec08281c5cb8cbe2fa69189f73e6ad68a0ceeeb8b2497",
+      "size_bytes": 817
+    },
+    {
+      "relative_path": "src/ig_trader/http_client.py",
+      "sha256": "0dc3dc3f4cf1ce83d78f7525bbf0204cd70f87bd0ebeb170fc2a67efb35b1352",
+      "size_bytes": 5142
+    },
+    {
+      "relative_path": "src/ig_trader/session.py",
+      "sha256": "9c10cbc24e031892e40a7180eb0179ff33b9efcfc2aad93477bd6daed3d9f70b",
+      "size_bytes": 5879
+    },
+    {
+      "relative_path": "src/ig_trader/shadow01/__init__.py",
+      "sha256": "3dcccd46db58145bee3ba37d522e517fb022160ed8dafc890167a8e4b38c1afd",
+      "size_bytes": 266
+    },
+    {
+      "relative_path": "src/ig_trader/shadow01/__main__.py",
+      "sha256": "d41c6adf0d4c4bde694b818dd53746155553966229cfbf0b33dfd89343dfe700",
+      "size_bytes": 6051
+    },
+    {
+      "relative_path": "src/ig_trader/shadow01/bounded_final_clock_smoke.py",
+      "sha256": "c8adc3bae4d59b6219865002ccd0ab6a5d5b683710472ad2e3cb8ed27032f63b",
+      "size_bytes": 20288
+    },
+    {
+      "relative_path": "src/ig_trader/shadow01/clock.py",
+      "sha256": "e1b17149a5d179cfce772b7e01c8354081648cfa802e9f2ebb81c1ad994aaac0",
+      "size_bytes": 8122
+    },
+    {
+      "relative_path": "src/ig_trader/shadow01/clock_diagnostic.py",
+      "sha256": "6d3bdbb74dcd30327d1092c7c616c363b7295bc1aef5865de0d3774fdfa83286",
+      "size_bytes": 38570
+    },
+    {
+      "relative_path": "src/ig_trader/shadow01/config.py",
+      "sha256": "377463da7217f2bb2e9e77b9d1f758735daed2b2399cb488cbef3c91df9b3390",
+      "size_bytes": 11021
+    },
+    {
+      "relative_path": "src/ig_trader/shadow01/data.py",
+      "sha256": "d9fd2b56f1bce90035f1d8bd240893020c3c554c9f28f0f631380d7b568469c6",
+      "size_bytes": 8837
+    },
+    {
+      "relative_path": "src/ig_trader/shadow01/dry_snapshot.py",
+      "sha256": "b4c24a7e00fab92375c8862e96e0415c958aff6433911ba0ffcbef149482bff1",
+      "size_bytes": 18840
+    },
+    {
+      "relative_path": "src/ig_trader/shadow01/engines.py",
+      "sha256": "279809f8b116ab4f063373242de423e2085f5c1e63605a6520201ec7ce9ed161",
+      "size_bytes": 29881
+    },
+    {
+      "relative_path": "src/ig_trader/shadow01/features.py",
+      "sha256": "dc2aab1d853214ce4015e00a426c9189ac43db044a7b42f7244d4d65770bbe02",
+      "size_bytes": 779
+    },
+    {
+      "relative_path": "src/ig_trader/shadow01/live_contract_probe.py",
+      "sha256": "0df4cb7d20fc26dee0f029bb34ca1b5f5f77a220c9c839a4be950ea273fcc3af",
+      "size_bytes": 15656
+    },
+    {
+      "relative_path": "src/ig_trader/shadow01/live_quote.py",
+      "sha256": "77cb5540ede5880ae7372c6f040f1b7e470a062ca4cab066cf58ce1da26fddb9",
+      "size_bytes": 8583
+    },
+    {
+      "relative_path": "src/ig_trader/shadow01/live_readonly_smoke.py",
+      "sha256": "db95160bcf0693b7af042a444f71c91aa68ac3127011527b6f8487e1d8f9bb68",
+      "size_bytes": 73948
+    },
+    {
+      "relative_path": "src/ig_trader/shadow01/live_schedule_contract_probe.py",
+      "sha256": "90a007796e7d09c669ad595f986c72e3dd90e95deac3782618456e5750c3e41b",
+      "size_bytes": 18199
+    },
+    {
+      "relative_path": "src/ig_trader/shadow01/live_v2_schedule_contract_probe.py",
+      "sha256": "f923ea78444fc9da2ecdc39d6a0ea4e08c64e67e03a9d8efb2951903f2678ae0",
+      "size_bytes": 13525
+    },
+    {
+      "relative_path": "src/ig_trader/shadow01/local_demo_read_only.py",
+      "sha256": "a05567fb4f998e172e794e7f25f92a3f81112ac6003200351ca4b524cd709812",
+      "size_bytes": 37342
+    },
+    {
+      "relative_path": "src/ig_trader/shadow01/local_demo_stream_transport.py",
+      "sha256": "63af8119de0cbed9d9045dcca4c6582add4bbaaca58c62df8e0b5f8caecac215",
+      "size_bytes": 57575
+    },
+    {
+      "relative_path": "src/ig_trader/shadow01/models.py",
+      "sha256": "16993f20ea124defe79a28cc85ea1a9df35f69538ac1405715de287dc52f15c6",
+      "size_bytes": 16815
+    },
+    {
+      "relative_path": "src/ig_trader/shadow01/outcomes.py",
+      "sha256": "9448e5d16c63d624dcd2783ba14ec038453ebfd63e62c400dbe1cad819ac794a",
+      "size_bytes": 5392
+    },
+    {
+      "relative_path": "src/ig_trader/shadow01/policies.py",
+      "sha256": "88092367615061e5f643f16edf37af0f8834f6cc8c345b45103c725064c84ef0",
+      "size_bytes": 17160
+    },
+    {
+      "relative_path": "src/ig_trader/shadow01/read_only_broker.py",
+      "sha256": "06f9a9d15e07c75b4501205a0184f126cc19111d5bba2a69f6a33a0ec23b1953",
+      "size_bytes": 20862
+    },
+    {
+      "relative_path": "src/ig_trader/shadow01/registry.py",
+      "sha256": "8d4c55052c8b2752f81e14f0f81d1393f7bc476691b86b2e481cbca0cf107def",
+      "size_bytes": 17808
+    },
+    {
+      "relative_path": "src/ig_trader/shadow01/runtime.py",
+      "sha256": "6c6a37db7c5f3ab942a9571d79a63e2df613b13f9f61f7151b09672b78d5b5a3",
+      "size_bytes": 56529
+    },
+    {
+      "relative_path": "src/ig_trader/shadow01/schedule_contract.py",
+      "sha256": "c37c14cdb1f1df16a37126001d215cb7653109b6d13a761b89e6de62027fe50c",
+      "size_bytes": 12162
+    },
+    {
+      "relative_path": "src/ig_trader/shadow01/schedule_metadata.py",
+      "sha256": "683966418647b9d99c23864cf1e7277ee9a16ca8851deb63b4a3c555e964d74e",
+      "size_bytes": 6364
+    },
+    {
+      "relative_path": "src/ig_trader/shadow01/storage.py",
+      "sha256": "8ed1bcbd3b13674df9e3a8359312596e3a5690f7d540a0c24f5ec38e0af8020f",
+      "size_bytes": 66591
+    },
+    {
+      "relative_path": "src/ig_trader/shadow01/stream_bridge.py",
+      "sha256": "76d92c21497f14f542426ca0251227ec4ecb67c92fa0c68157c2e3410ac88c72",
+      "size_bytes": 29598
+    },
+    {
+      "relative_path": "src/ig_trader/shadow01/warmup_diagnostic.py",
+      "sha256": "0c6a131d13e34462884c1c2b53bc267bed9ef072252f9ad792f95ace6bbe60df",
+      "size_bytes": 22069
+    },
+    {
+      "relative_path": "tests/shadow01_dq03_fixtures.py",
+      "sha256": "dd160a5690939e35daebb72d15c2f4b0bad755ca38446db071f8541894abd769",
+      "size_bytes": 7466
+    },
+    {
+      "relative_path": "tests/test_dashboard_app.py",
+      "sha256": "38784ea693a092be5f8c9726d68520b4829db0bf5a854f67f2c1206cf48fcc4a",
+      "size_bytes": 5847
+    },
+    {
+      "relative_path": "tests/test_session.py",
+      "sha256": "c8165f1408ace2cfb12e1b7dd6042452d477d5273e9e23e5dcf7fe13a482a35a",
+      "size_bytes": 5885
+    },
+    {
+      "relative_path": "tests/test_shadow01_data.py",
+      "sha256": "e9113fff439a4af3670b29602d9ef897fb14c63cda4ab374c26791b2ffffa647",
+      "size_bytes": 4356
+    },
+    {
+      "relative_path": "tests/test_shadow01_diagnostics.py",
+      "sha256": "7bd89f9bb0624b8e43c50152420aaa7d6a37bf54f486b87412de84824a9399d0",
+      "size_bytes": 25628
+    },
+    {
+      "relative_path": "tests/test_shadow01_dry_snapshot.py",
+      "sha256": "bc2a01edd11f18695811415191184d0f99a41e9547f850b41dce89db68863c67",
+      "size_bytes": 12135
+    },
+    {
+      "relative_path": "tests/test_shadow01_engines.py",
+      "sha256": "616fd74967be4f9ce29acb96dcfd0e322bb30dddba3bf0caa943f636a8913697",
+      "size_bytes": 7724
+    },
+    {
+      "relative_path": "tests/test_shadow01_execution_impossibility.py",
+      "sha256": "ff661abd3a78fa74cf22f5605df07308033ac581085496ad4619585fc2b8de1a",
+      "size_bytes": 3441
+    },
+    {
+      "relative_path": "tests/test_shadow01_gate12.py",
+      "sha256": "417fc2b1279350b93a60fcdcf1d9edf439f8630f87ff535ff783122ca618571c",
+      "size_bytes": 17645
+    },
+    {
+      "relative_path": "tests/test_shadow01_gate13.py",
+      "sha256": "c6cd827a87c88c65537d6bb0225ce55a07456f7d552464e0655663c4cca4097e",
+      "size_bytes": 6413
+    },
+    {
+      "relative_path": "tests/test_shadow01_governance.py",
+      "sha256": "3bd898030872abf4a7c382315e468112316d2d2478afa13b5ee2c78b08c2d7ce",
+      "size_bytes": 24601
+    },
+    {
+      "relative_path": "tests/test_shadow01_live_quote.py",
+      "sha256": "ed7146950d6b66d15e742e32723c493f90b479eb31e79ca27926d16ca189ef58",
+      "size_bytes": 4053
+    },
+    {
+      "relative_path": "tests/test_shadow01_live_readonly_smoke.py",
+      "sha256": "8555a1d874241efc60b01048850f0b5726a61e0f1e50dc4c295f974b667cc110",
+      "size_bytes": 41203
+    },
+    {
+      "relative_path": "tests/test_shadow01_local_demo_read_only.py",
+      "sha256": "f3609fdfa11d25354779aa35bd049087278aa9d2394f21e036c0a719497bac58",
+      "size_bytes": 33175
+    },
+    {
+      "relative_path": "tests/test_shadow01_local_demo_stream_transport.py",
+      "sha256": "583d27bae4b3baff72620f096712e270931795120ae1eb6a619f92ef9b3ec2af",
+      "size_bytes": 32063
+    },
+    {
+      "relative_path": "tests/test_shadow01_policies_outcomes.py",
+      "sha256": "8252f914fa57590c84a3188a0a6026983908dac9dfd5ec5b069379ce162a8794",
+      "size_bytes": 10801
+    },
+    {
+      "relative_path": "tests/test_shadow01_read_only_broker.py",
+      "sha256": "9170429f76a6f2fc645a9ce3263583617f0adf5f7a46af1be745e7959064dc29",
+      "size_bytes": 12957
+    },
+    {
+      "relative_path": "tests/test_shadow01_runtime.py",
+      "sha256": "042094d398bceddb2d7aef6494007c074b071cf7ce4df13520d1a1a14f62cbe3",
+      "size_bytes": 21453
+    },
+    {
+      "relative_path": "tests/test_shadow01_schedule_metadata.py",
+      "sha256": "81a4d2b8e80064eef5088caef2eb427f28583a93270350826ad860b0ddb3af30",
+      "size_bytes": 2725
+    },
+    {
+      "relative_path": "tests/test_shadow01_stream_bridge.py",
+      "sha256": "dc7df68d3384c6e78593f2a1920381387c0eb3d697f9e3281527fcae20abb026",
+      "size_bytes": 15833
+    },
+    {
+      "relative_path": "tests/test_shadow_tournament_dashboard.py",
+      "sha256": "a7f50241a49481c163b8807abfc18c124dfbcec9c072778b086e6ed18c5993ab",
+      "size_bytes": 8681
+    },
+    {
+      "relative_path": "tools/launch_shadow_tournament.cmd",
+      "sha256": "02c3e20bf16ca7eea3c0260d40df91248e129ad9b23c5e84f1d588af316f5617",
+      "size_bytes": 237
+    }
+  ],
+  "source_inventory_file_count": 61,
+  "source_inventory_fingerprint": "c005050f5a3c428b98ed4bd836ec423d983fefac6d33c23b31752bba2c6d9829",
+  "strategies_and_policies": [
+    "T1",
+    "M1",
+    "X1",
+    "F1",
+    "Q1",
+    "C1",
+    "P0",
+    "P1",
+    "P2",
+    "P3"
+  ],
+  "tournament": {
+    "outcomes": 0,
+    "prospective_decisions": 0,
+    "tournament_epoch": "NOT_CREATED"
+  },
+  "version": "SHADOW01-V1"
+}

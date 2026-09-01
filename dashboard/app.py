@@ -21,6 +21,7 @@ from dashboard.pages import (
     overview,
     roadmap,
     shadow,
+    shadow_tournament,
     strategy_lab,
     system,
     tests_ci,
@@ -36,6 +37,7 @@ from dashboard.sources.github import (
 from dashboard.sources.project import ProjectGateValidationError, load_project_status
 from dashboard.sources.replay import historical_replay_summary
 from dashboard.sources.shadow import load_shadow_data
+from dashboard.sources.shadow_tournament import load_shadow_tournament_dashboard
 from dashboard.sources.strategy_lab import load_strategy_lab_snapshot
 
 PAGES = (
@@ -47,6 +49,7 @@ PAGES = (
     "DECISION EXPLORER",
     "RISK & HEALTH",
     "DEMO OPERATOR",
+    "SHADOW TOURNAMENT",
 )
 
 
@@ -86,6 +89,9 @@ def clear_github_status_cache() -> None:
 def render_control_center(page: str, github: GitHubStatus | None = None) -> None:
     """Render navigation from prepared read-only state and retained legacy views."""
 
+    if page == "SHADOW TOURNAMENT":
+        shadow_tournament.render(load_shadow_tournament_dashboard())
+        return
     try:
         project_status = load_project_status()
     except ProjectGateValidationError:
@@ -147,6 +153,9 @@ def main() -> None:
 
     @st.fragment(run_every=60)
     def render_current_page() -> None:
+        if page == "SHADOW TOURNAMENT":
+            render_control_center(page)
+            return
         try:
             project_status = load_project_status()
             state = load_control_center_state(project_status, load_demo_operator_snapshot())

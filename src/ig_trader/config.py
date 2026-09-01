@@ -16,6 +16,7 @@ class Settings(BaseSettings):
     ig_base_url: str = "https://demo-api.ig.com/gateway/deal"
     ig_expected_demo_account_id: str = ""
     demo_operator_local: bool = False
+    paper_trading: bool = True
 
     # Logging
     log_level: str = "INFO"
